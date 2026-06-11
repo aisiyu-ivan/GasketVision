@@ -1,0 +1,151 @@
+#include "CameraIpcPublisher.h"
+
+#include "CameraIpcLayout.h"
+#include "CameraIpcSync.h"
+
+#include <QSharedMemory>
+
+#include <opencv2/core.hpp>
+
+#include <cstring>
+
+// 构造相机 IPC 发布器
+CameraIpcPublisher::CameraIpcPublisher()
+    : m_sync(new CameraIpcSync())
+{
+}
+
+// 释放 SHM 与同步对象
+CameraIpcPublisher::~CameraIpcPublisher()
+{
+    if (m_shm)
+    {
+        if (m_shm->isAttached())
+            m_shm->detach();
+        delete m_shm;
+        m_shm = nullptr;
+    }
+    delete m_sync;
+    m_sync = nullptr;
+}
+
+// 创建相机 SHM 区域与同步对象
+bool CameraIpcPublisher::initialize()
+{
+    if (m_ready)
+        return true;
+
+    if (!m_sync->create())
+        return false;
+
+    m_shm = new QSharedMemory(CameraIpc::shmKey());
+    const qsizetype bytes = CameraIpc::regionBytes();
+    if (!m_shm->create(static_cast<int>(bytes)))
+    {
+        if (m_shm->error() == QSharedMemory::AlreadyExists)
+        {
+            if (m_shm->attach())
+                m_shm->detach();
+            if (!m_shm->create(static_cast<int>(bytes)))
+                return false;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    std::memset(m_shm->data(), 0, static_cast<size_t>(bytes));
+    auto *ctrl = CameraIpc::controlBlock(m_shm->data());
+    ctrl->magic = CameraIpc::kMagic;
+    ctrl->version = CameraIpc::kVersion;
+
+    m_ready = true;
+    return true;
+}
+
+// 将像素写入指定环槽并填充图像头
+bool CameraIpcPublisher::writePlane(void *shm, quint32 slotIndex, quint64 frameId, const VisionFrame &frame)
+{
+    if (frame.image.empty())
+        return false;
+
+    cv::Mat continuous = frame.image.isContinuous() ? frame.image : frame.image.clone();
+    quint8 format = CameraIpc::Gray8;
+    if (continuous.channels() == 3)
+        format = CameraIpc::Bgr888;
+    else if (continuous.channels() != 1)
+        return false;
+
+    const quint32 payloadSize =
+        static_cast<quint32>(static_cast<qsizetype>(continuous.step) * continuous.rows);
+    if (payloadSize == 0 || payloadSize > static_cast<quint32>(CameraIpc::kMaxImageBytes))
+        return false;
+
+    auto *header = CameraIpc::planeHeader(shm, slotIndex);
+    uchar *payload = CameraIpc::planePayload(shm, slotIndex);
+    header->magic = CameraIpc::kMagic;
+    header->frameId = frameId;
+    header->width = static_cast<quint32>(continuous.cols);
+    header->height = static_cast<quint32>(continuous.rows);
+    header->bytesPerLine = static_cast<quint32>(continuous.step);
+    header->format = format;
+    header->payloadSize = payloadSize;
+    std::memcpy(payload, continuous.data, payloadSize);
+    return true;
+}
+
+// 将一帧写入环槽并通知引擎
+bool CameraIpcPublisher::publish(const VisionFrame &frame)
+{
+    if (!m_ready && !initialize())
+        return false;
+    const quint64 frameId = m_frameId + 1;
+    return publish(frame, frameId);
+}
+
+// 严格模式：按指定 frameId 写入环槽
+bool CameraIpcPublisher::publish(const VisionFrame &frame, quint64 frameId)
+{
+    if (!m_ready && !initialize())
+        return false;
+    if (frameId == 0 || frameId <= m_frameId)
+        return false;
+    if (!m_sync->lock())
+        return false;
+
+    const quint32 slotIndex = static_cast<quint32>(frameId % CameraIpc::kRingSlots);
+    if (!writePlane(m_shm->data(), slotIndex, frameId, frame))
+    {
+        m_sync->unlock();
+        return false;
+    }
+
+    auto *ctrl = CameraIpc::controlBlock(m_shm->data());
+    ctrl->magic = CameraIpc::kMagic;
+    ctrl->version = CameraIpc::kVersion;
+    ctrl->frameId = frameId;
+    ctrl->timestampMs = frame.timestampMs;
+    ctrl->slotIndex = slotIndex;
+
+    const QByteArray pathUtf8 = frame.sourcePath.toUtf8();
+    std::memset(ctrl->sourcePath, 0, sizeof(ctrl->sourcePath));
+    std::memcpy(ctrl->sourcePath, pathUtf8.constData(),
+                static_cast<size_t>(qMin(pathUtf8.size(), static_cast<int>(sizeof(ctrl->sourcePath) - 1))));
+
+    const QByteArray statusUtf8 = frame.cameraStatus.toUtf8();
+    std::memset(ctrl->cameraStatus, 0, sizeof(ctrl->cameraStatus));
+    std::memcpy(ctrl->cameraStatus, statusUtf8.constData(),
+                static_cast<size_t>(qMin(statusUtf8.size(), static_cast<int>(sizeof(ctrl->cameraStatus) - 1))));
+
+    if (CameraIpc::planeHeader(m_shm->data(), slotIndex)->frameId != frameId)
+    {
+        m_sync->unlock();
+        return false;
+    }
+
+    m_frameId = frameId;
+    m_sync->unlock();
+    m_sync->notifyFrameReady();
+    return true;
+}

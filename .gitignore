@@ -1,0 +1,35 @@
+# Build output
+build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/*.autogen/
+**/qrc_*.cpp
+**/moc_*.cpp
+**/ui_*.h
+
+# Qt Creator / IDE
+.qtcreator/
+*.user
+*.user.*
+*.autosave
+
+# Binaries and libs
+*.exe
+*.dll
+*.a
+*.lib
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# Test generated artifacts
+test/station1/*.png
+test/templates/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini

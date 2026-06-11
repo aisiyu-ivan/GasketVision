@@ -1,0 +1,13 @@
+{
+  "rows": 1,
+  "cols": 1,
+  "pieCount": 1,
+  "fillOrder": "RowMajor",
+  "varsPerPie": [
+    ["OK", "NG"]
+  ],
+  "varCounts": {
+    "OK": 0,
+    "NG": 0
+  }
+}

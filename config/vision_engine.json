@@ -1,0 +1,21 @@
+{
+  "imageSource": "gige",
+  "pxPerMm": 10.0,
+  "imageCenterPx": [320, 240],
+  "matchScoreMin": 0.45,
+  "spec": {
+    "outerDiameterMm": 12.0,
+    "innerDiameterMm": 8.0,
+    "outerTolMm": 0.10,
+    "innerTolMm": 0.08,
+    "offsetTolMm": 0.12
+  },
+  "templatePath": "templates/fiducial_L.png",
+  "strictSampleAccounting": true,
+  "camera": {
+    "ip": "192.168.1.100",
+    "port": 3956,
+    "reconnectMs": 3000,
+    "grabIntervalMs": 800
+  }
+}
