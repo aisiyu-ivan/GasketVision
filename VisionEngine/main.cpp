@@ -66,6 +66,9 @@ int main(int argc, char *argv[])
     commWorker->moveToThread(&commThread);
     algoWorker->moveToThread(&algoThread);
 
+    QObject::connect(algoWorker, &StationAlgoWorker::inspectCompleted, commWorker,
+                     &StationCommWorker::onInspectCompleted, Qt::QueuedConnection);
+
     QObject::connect(&commThread, &QThread::finished, commWorker, &QObject::deleteLater);
     QObject::connect(&algoThread, &QThread::finished, algoWorker, &QObject::deleteLater);
 

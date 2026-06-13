@@ -19,11 +19,14 @@ public:
     bool configure(const QJsonObject &rootConfig, int stationId, const QString &configDir = QString());
 
 public slots:
-    // 在算法线程执行单帧检测（供通信线程 BlockingQueuedConnection 调用）
+    // 在算法线程执行单帧检测（异步，完成后 emit inspectCompleted）
+    void inspectFrameAsync(const VisionFrame &frame);
+    // 同步检测（保留供测试或外部调用）
     GasketInspectResult inspectFrame(const VisionFrame &frame);
 
 signals:
     void logMessage(const QString &message);
+    void inspectCompleted(const GasketInspectResult &result, const VisionFrame &frame);
 
 private:
     int m_stationId = 1;

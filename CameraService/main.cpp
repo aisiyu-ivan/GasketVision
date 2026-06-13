@@ -54,8 +54,6 @@ int main(int argc, char *argv[])
     if (!publishWorker->configure(config))
         return 4;
 
-    grabWorker->setPublishWorker(publishWorker);
-
     grabWorker->moveToThread(&grabThread);
     publishWorker->moveToThread(&publishThread);
 

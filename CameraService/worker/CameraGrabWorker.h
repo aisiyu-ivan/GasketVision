@@ -11,7 +11,7 @@
 
 class QTimer;
 
-// 采图线程：按间隔或严格反压抓取 VisionFrame
+// 采图线程：按间隔持续抓取 VisionFrame（环缓反压在发布写 SHM 前）
 class CameraGrabWorker : public QObject
 {
     Q_OBJECT
@@ -21,7 +21,6 @@ public:
     ~CameraGrabWorker() override;
 
     bool configure(const QJsonObject &rootConfig);
-    void setPublishWorker(class CameraPublishWorker *publishWorker);
 
 public slots:
     bool startGrab();
@@ -40,7 +39,6 @@ private:
     static int resolveIntervalMs(const QJsonObject &rootConfig);
 
     std::unique_ptr<IVisionImageSource> m_source;
-    CameraPublishWorker *m_publishWorker = nullptr;
     bool m_strictAccounting = true;
     bool m_running = false;
     int m_intervalMs = 800;

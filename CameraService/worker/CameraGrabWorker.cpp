@@ -1,6 +1,5 @@
 #include "CameraGrabWorker.h"
 
-#include "CameraPublishWorker.h"
 #include "ImageSourceFactory.h"
 
 #include <QJsonArray>
@@ -18,11 +17,6 @@ CameraGrabWorker::CameraGrabWorker(QObject *parent)
 CameraGrabWorker::~CameraGrabWorker()
 {
     stopGrab();
-}
-
-void CameraGrabWorker::setPublishWorker(CameraPublishWorker *publishWorker)
-{
-    m_publishWorker = publishWorker;
 }
 
 int CameraGrabWorker::resolveIntervalMs(const QJsonObject &rootConfig)
@@ -87,21 +81,8 @@ void CameraGrabWorker::onIntervalTimer()
 
 void CameraGrabWorker::onReadyForNextGrab()
 {
-    if (!m_running || !m_strictAccounting)
+    if (!m_running)
         return;
-
-    if (m_publishWorker)
-    {
-        bool slotOk = false;
-        QMetaObject::invokeMethod(m_publishWorker, "requestCaptureSlot", Qt::BlockingQueuedConnection,
-                                  Q_RETURN_ARG(bool, slotOk));
-        if (!slotOk)
-        {
-            QTimer::singleShot(m_intervalMs, this, &CameraGrabWorker::onReadyForNextGrab);
-            return;
-        }
-    }
-
     grabOnce();
 }
 
@@ -114,10 +95,6 @@ bool CameraGrabWorker::startGrab()
 
     m_running = true;
     emit logMessage(QStringLiteral("采图线程已启动"));
-
-    if (m_strictAccounting)
-        return true;
-
     m_intervalTimer->start();
     grabOnce();
     return true;

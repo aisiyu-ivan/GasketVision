@@ -121,9 +121,9 @@ test/vision_engine.json  ──►  test/run_test.bat（生成 station1 + 启动
 |------|--------|------|
 | `camera/` | `IVisionImageSource`、`SyntheticImageSource`、`GigEVisionCamera`、`ImageSourceFactory` | 按配置采图 |
 | `ipc/` | `CameraIpcPublisher`、`CameraIpcSync`、`CameraIpcLayout` | 写相机 SHM |
-| `CameraService/socket/camera_engine/` | `CameraEngineSocketClient` | connect `GasketVision.Camera.Control`；严格模式 `sendReadyAndWaitAck` 后再采图写 SHM |
+| `CameraService/socket/camera_engine/` | `CameraEngineSocketClient` | connect `GasketVision.Camera.Control`；严格模式 **写 SHM 前** `sendReadyAndWaitAck` |
 
-**线程**：**主线程**（Qt 事件循环）+ **采图线程**（`CameraGrabWorker`：`grabFrame`）+ **发布线程**（`CameraPublishWorker`：SHM、`ready`/`ack`）。非严格模式下采图与发布可并行（队列最多 2 帧）；**严格模式**下采图前先经发布线程拿到 Engine `ack`，再 `grabFrame` → 写相机 SHM，间隔后触发下一周期。
+**线程**：**主线程** + **采图线程**（按间隔 `grabFrame`）+ **发布线程**（**写 SHM 前** ready/ack、publish）。严格模式下采图与发布 **解耦**：采图持续进行，发布队列最多 **4 帧**，满则丢新帧；环缓反压只阻塞 **发布写 SHM**。
 
 **正式**（`build/` + `HMI.exe`）：`config/vision_engine.json` → `gige`，连真机；`grabFrame` 未接 SDK 前无图、饼图无数据属正常。  
 **测试**（`test/` + `HMI_Test.exe` + **`test/run_test.bat`**）：`test/vision_engine.json` → `synthetic`，循环读 `test/station1/` 合成 png。
@@ -138,9 +138,9 @@ test/vision_engine.json  ──►  test/run_test.bat（生成 station1 + 启动
 | `VisionEngine/socket/camera_engine/` | `CameraEngineSocketServer` | listen 相机套接字；解析 `ready`，环缓有空位时 `ack` |
 | `VisionEngine/socket/engine_hmi/` | `EngineHmiSocketClient` | connect HMI；`hello`/`ping`；严格模式 `sendReadyAndWaitAck` 后再写 HMI SHM |
 | `worker/` | `StationAlgoWorker` | 算法线程：OpenCV 模板匹配 + 径向测径 + 公差判定 |
-| `worker/` | `StationCommWorker` | 通信线程：读相机 SHM、调度检测、写 HMI SHM、Camera/HMI 套接字与 ping |
+| `worker/` | `StationCommWorker` | 通信线程：读相机 SHM、**异步**调度检测、写 HMI SHM、**onReadyTick** grant cam_ack、ping |
 
-**线程**：**主线程**（Qt 事件循环）+ **通信线程**（`StationCommWorker`：SHM 管道 + 套接字 + ping）+ **算法线程**（`StationAlgoWorker::inspectFrame`）。
+**线程**：**主线程** + **通信线程**（poll 读 SHM、**Queued** 派发 `inspectFrameAsync`、写 HMI 前 ready/ack）+ **算法线程**（`inspectFrameAsync` → `inspectCompleted`）。
 
 ---
 
@@ -213,7 +213,7 @@ Engine:  wait(相机 SHM) → inspect → ready(HMI) → 等待 hmi_ack → publ
 HMI:     ready 到达 →（环缓有空位）ack → wait(HMI SHM) → record → UI 刷新
 ```
 
-读相机 SHM 后、算法完成前，Engine 可再次 `processReadyRequests`，在环缓允许时提前 `cam_ack`，使采图与检测 **部分流水线重叠**。
+读相机 SHM 与算法 **异步并行**；strict 下 Engine 通过 **`onReadyTick`（10ms）** 独立 `processReadyRequests` 及时 `cam_ack`，不依赖算法完成。
 
 ### 4.4 非严格模式
 

@@ -1,6 +1,7 @@
 #ifndef STATIONCOMMWORKER_H
 #define STATIONCOMMWORKER_H
 
+#include "GasketInspector.h"
 #include "CameraEngineSocketServer.h"
 #include "CameraIpcReader.h"
 #include "EngineHmiSocketClient.h"
@@ -9,6 +10,7 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QQueue>
 
 class QTimer;
 class StationAlgoWorker;
@@ -36,26 +38,34 @@ public slots:
     bool startPipeline();
     void stopPipeline();
 
+public slots:
+    void onInspectCompleted(const GasketInspectResult &result, const VisionFrame &frame);
+
 signals:
     void logMessage(const QString &message);
 
 private slots:
     void onPingTimer();
     void onPollFrame();
+    void onReadyTick();
 
 private:
+    void tryDispatchInspect();
     bool requestHmiPublishSlot(quint64 hmiFrameId, int stationId, bool ok);
 
     bool m_strictAccounting = true;
     bool m_pipelineRunning = false;
     int m_stationId = 1;
+    bool m_inspectRunning = false;
     StationAlgoWorker *m_algoWorker = nullptr;
     EngineHmiSocketClient m_hmiClient;
     CameraEngineSocketServer m_cameraServer;
     CameraIpcReader m_cameraReader;
     HmiIpcPublisher m_hmiIpc;
+    QQueue<VisionFrame> m_pendingInspect;
     QTimer *m_pingTimer = nullptr;
     QTimer *m_pollTimer = nullptr;
+    QTimer *m_readyTimer = nullptr;
 };
 
 #endif // STATIONCOMMWORKER_H

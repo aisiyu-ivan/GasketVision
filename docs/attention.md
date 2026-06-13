@@ -33,7 +33,7 @@
 | 进程 | 线程 |
 |------|------|
 | HMI | 2：主线程（事件循环 + UI）+ 通信线程（读检测 SHM + Engine 套接字） |
-| CameraService | 3：主线程（事件循环）+ 采图线程（`grabFrame`）+ 发布线程（SHM + 严格 ready/ack） |
+| CameraService | 3：主线程（事件循环）+ 采图线程（持续 `grabFrame`）+ 发布线程（写 SHM 前 ready/ack） |
 | VisionEngine | 3：主线程（事件循环）+ 通信线程（SHM + 套接字/ping）+ 算法线程（OpenCV 检测） |
 
 检测算法本身未多线程并行；多线程用于 **I/O 与计算分线程、主线程/UI 不卡顿**；严格模式下 **ready/ack 反压** 会在下游慢时 **主动限流**（不是全链路无阻塞）。
@@ -81,8 +81,9 @@
 
 **答：** 严格模式（`strictSampleAccounting: true`）在 **`VisionEngine/socket/camera_engine/`** 与 **`CameraService/socket/camera_engine/`** 增加 **`GasketVision.Camera.Control`**，实现 **环缓反压**（数据仍只走 SHM）：
 
-- **CameraService（client）**：发 **`ready <frameId>`** 申请空位 → **等** Engine **`ack`** → 再 **`grabFrame` + 写相机 SHM**
-- **VisionEngine（server）**：解析 `ready`；当 `frameId ≤ lastRead + 4` 时回 **`ack`**（读相机 SHM 后也会再次处理 pending `ready`）
+- **CameraService（client，发布线程）**：**写相机 SHM 前** 发 **`ready <frameId>`** → **等** Engine **`ack`** → 再 **`publish`**
+- **CameraService（采图线程）**：按 **`intervalMs` 持续 `grabFrame`**，经信号槽交给发布队列（队列满则丢弃新帧）
+- **VisionEngine（server）**：独立定时 **`processReadyRequests`**；当 `frameId ≤ lastRead + 4` 时回 **`ack`**
 
 未收到 `ack` 时 **`sendReadyAndWaitAck`**：每 **3s** 重发 `ready`，总超时 **60s**。非严格模式不 listen/不握手。
 
@@ -207,7 +208,7 @@ Camera↔Engine **只有 ready/ack**，无 hello/ping。**都不传像素。**
 
 **答：** 配置 `strictSampleAccounting: true`（正式默认）。**数据**走 `ipc/`；**写 SHM 前**走 **ready/ack**：
 
-1. **Camera → Engine**：Camera **`ready`** → Engine **`ack`** → Camera 采图并写相机 SHM  
+1. **Camera → Engine**：发布线程 **`ready`** → Engine **`ack`** → **publish** 相机 SHM（采图线程持续 grab，与 ack 解耦）
 2. **Engine → HMI**：Engine **`ready`** → HMI **`ack`** → Engine 写 HMI SHM  
 3. Engine 读完相机 SHM 后可提前 **`cam_ack`**，使采图与检测部分重叠  
 
@@ -232,7 +233,7 @@ Camera↔Engine **只有 ready/ack**，无 hello/ping。**都不传像素。**
 | **阻塞** | 某线程在 `waitFor*`、`waitAck`、`waitFrameReady`、`BlockingQueuedConnection`、SHM `lock` 上长时间不返回；界面无响应、样品不再刷新、Camera 停在「等 ack」 |
 | **死锁** | 两个及以上线程/进程 **互相等待** 对方释放资源，且无超时退出；例如 A 等 B 的 ack、B 等 A 的 UI 处理完 |
 
-本项目 **刻意避免 UI 线程参与 Blocking 等待**；严格模式下 **Camera / Engine 通信线程** 会在 **ready/ack** 与 **算法** 上阻塞，属 **环缓反压与逐件限流**，与「多线程防 UI 卡顿」并存而非矛盾。
+本项目 **刻意避免 UI 线程参与 Blocking 等待**；严格模式下 **发布写 SHM 前**、**写 HMI SHM 前** 会在 ready/ack 上等待，属 **环缓反压**；采图与算法检测与之 **解耦**。
 
 ### Q26：进程与 IPC 层面如何预防卡住？
 
@@ -263,9 +264,10 @@ Camera↔Engine **只有 ready/ack**，无 hello/ping。**都不传像素。**
 **答：** 严格模式形成 **ready → ack → 写 SHM** 的反压（数据走 SHM，确认走套接字）：
 
 ```
-Camera:  sendReadyAndWaitAck → grabFrame → publish(相机 SHM) → 间隔 → 下一 ready
-Engine:  processReady(可 cam_ack) → waitAndRead → inspect → sendReadyAndWaitAck(HMI) → publish(HMI SHM)
-HMI:     on ready → ack（环缓未满）→ read SHM → UI
+Camera:  grab(采图线程，持续) → frameGrabbed → 发布队列
+         发布线程: ready/ack → publish(相机 SHM)
+Engine:  读相机 SHM → inspectFrameAsync(算法线程) → ready/ack(HMI) → publish(HMI SHM)
+HMI:     on ready → ack → read SHM → UI
 ```
 
 **预防要点：**
@@ -274,7 +276,7 @@ HMI:     on ready → ack（环缓未满）→ read SHM → UI
 |------|------|------|
 | Engine 未 listen 相机套接字 | Camera `waitAck` 失败 | 正式配置 `strictSampleAccounting: true`；Engine 先 `startComm` |
 | 长时间收不到 ack | 采图/写 HMI 暂停 | **`sendReadyAndWaitAck`** 每 3s 重发 `ready`，总 60s；失败后再 `intervalMs` 重试 |
-| Engine 检测过慢 | `cam_ack` 延迟 | 优化算法；读 SHM 后 `processReadyRequests` 可提前 ack 下一采图 |
+| Engine 检测过慢 | 发布/HMI 反压 | 采图可继续；Engine 待检队列最多 4 帧；**独立 `onReadyTick`** 及时 `cam_ack` |
 | Engine 等 HMI ack 时通信线程占用 | 本轮无法处理新 `ready` | 环缓允许多帧在途；HMI 读 SHM 后释放空位 |
 | 算法 `inspectFrame` 永久阻塞 | 整条链停 | **当前无算法超时**；现场需 taskkill 或后续加看门狗 |
 
@@ -289,10 +291,10 @@ HMI:     on ready → ack（环缓未满）→ read SHM → UI
 | **HMI 主线程** | UI 更新、`onFrame`、`InspectionAggregator` | 主线程 `BlockingQueuedConnection` 等通信线程；主线程 `waitFor*` |
 | **HMI 通信线程** | `HmiIpcSubscriberWorker` 读 SHM + `EngineHmiSocketServer` listen/ack（同线程） | 直接操作 `QLabel` / `QWidget` |
 | **frameReceived → UI** | 通信线程 `emit`；主线程 Queued `onFrame` | 主线程读 SHM |
-| **VisionEngine 通信线程** | `QTimer` 轮询 `onPollFrame` | 在 `onPollFrame` 内 **BlockingQueued** 等算法 + **sendReadyAndWaitAck(HMI)** |
-| **VisionEngine 算法线程** | 仅 `inspectFrame` | 算法线程访问套接字 |
-| **CameraService 采图线程** | `grabFrame`；严格模式 **`BlockingQueued` 调 `requestCaptureSlot`** 后再采 | 在采图线程直接 `waitAck` |
-| **CameraService 发布线程** | SHM `publish`、`sendReadyAndWaitAck` | — |
+| **VisionEngine 通信线程** | `QTimer` 轮询读 SHM、**`onReadyTick` grant cam_ack** | 不在 `onPollFrame` 内 Blocking 等算法 |
+| **VisionEngine 算法线程** | `inspectFrameAsync` | 完成后 **Queued** 回通信线程再 **写 HMI SHM 前 ready/ack** |
+| **CameraService 采图线程** | 按间隔 **`grabFrame`** | **不**调用 `requestCaptureSlot` |
+| **CameraService 发布线程** | **`requestCaptureSlot` 后 publish** | 环缓满时在套接字上等 ack，采图不阻塞 |
 
 **原则：** UI 线程不参与 Blocking 等待；严格反压下 **会阻塞** 采图/发布/通信线程，属 **故意限流**，不是 UI 卡顿防护失败。
 
@@ -336,13 +338,14 @@ HMI:     on ready → ack（环缓未满）→ read SHM → UI
 
 ```
 主线程：     exec() 事件循环
-通信线程：   poll → processReady → waitAndRead → [BlockingQueued] inspectFrame
-             → sendReadyAndWaitAck(HMI) → publish(HMI SHM)
-算法线程：   inspectFrame（OpenCV，无套接字/SHM 写）
+通信线程：   poll 读相机 SHM → 待检队列 → Queued inspectFrameAsync
+             onReadyTick → processReadyRequests（strict）
+             onInspectCompleted → sendReadyAndWaitAck(HMI) → publish(HMI SHM)
+算法线程：   inspectFrameAsync → emit inspectCompleted
 ```
 
-- **唯一跨线程同步点**：通信 → 算法的 `BlockingQueuedConnection`。
-- **严格模式**：通信线程在 **HMI ready/ack** 与 **算法** 上均可能长时间阻塞；算法线程本身不阻塞在 I/O 上。
+- **通信 ↔ 算法**：`QueuedConnection` + `inspectCompleted` 回调，**不 Blocking 占满通信线程**。
+- **严格模式**：HMI **ready/ack** 仍在 **写 HMI SHM 前**；Camera **ready/ack** 在 **发布线程写相机 SHM 前**。
 
 ### Q32：HMI 界面「假死」或长时间无刷新如何预防？
 

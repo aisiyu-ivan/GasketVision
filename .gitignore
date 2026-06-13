@@ -1,3 +1,6 @@
+# Local tools (not for repo)
+.tools/
+
 # Build output
 build/
 **/CMakeFiles/

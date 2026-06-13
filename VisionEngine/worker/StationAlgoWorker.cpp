@@ -31,6 +31,13 @@ bool StationAlgoWorker::configure(const QJsonObject &rootConfig, int stationId, 
     return true;
 }
 
+// 在算法线程异步执行单帧检测
+void StationAlgoWorker::inspectFrameAsync(const VisionFrame &frame)
+{
+    const GasketInspectResult result = inspectFrame(frame);
+    emit inspectCompleted(result, frame);
+}
+
 // 在算法线程执行单帧检测
 GasketInspectResult StationAlgoWorker::inspectFrame(const VisionFrame &frame)
 {

@@ -27,7 +27,7 @@ public:
 public slots:
     bool startPublish();
     void stopPublish();
-    // 严格模式：向 Engine 请求环缓空位后再采图
+    // 严格模式：写相机 SHM 前向 Engine 请求环缓空位
     bool requestCaptureSlot();
     void onFrameGrabbed(const VisionFrame &frame);
 

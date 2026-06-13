@@ -1,5 +1,7 @@
 #include "CameraPublishWorker.h"
 
+#include "CameraIpcLayout.h"
+
 #include <QJsonArray>
 #include <QMutexLocker>
 #include <QThread>
@@ -13,6 +15,7 @@ constexpr int kEngineConnectTimeoutMs = 1000;
 constexpr int kEngineConnectRetryMs = 500;
 constexpr int kSlotAckTotalMs = 60000;
 constexpr int kSlotAckAttemptMs = 3000;
+constexpr int kSlotRetryMs = 500;
 } // namespace
 
 CameraPublishWorker::CameraPublishWorker(QObject *parent)
@@ -167,18 +170,38 @@ void CameraPublishWorker::processNextQueued()
         frame = m_pendingFrames.dequeue();
     }
 
+    if (m_strictAccounting && !requestCaptureSlot())
+    {
+        {
+            QMutexLocker lock(&m_queueMutex);
+            m_pendingFrames.prepend(frame);
+            m_processing = false;
+        }
+        QTimer::singleShot(kSlotRetryMs, this, [this]() {
+            QMutexLocker lock(&m_queueMutex);
+            if (!m_running || m_processing || m_pendingFrames.isEmpty())
+                return;
+            m_processing = true;
+            QMetaObject::invokeMethod(this, "processNextQueued", Qt::QueuedConnection);
+        });
+        return;
+    }
+
     const bool published = publishFrame(frame);
 
     if (m_strictAccounting)
     {
-        if (published)
-            m_intervalTimer->start(m_intervalMs);
-        else
-            emit readyForNextGrab();
+        if (!published)
+        {
+            QMutexLocker lock(&m_queueMutex);
+            m_pendingFrames.prepend(frame);
+        }
 
         QMutexLocker lock(&m_queueMutex);
         if (m_pendingFrames.isEmpty())
             m_processing = false;
+        else
+            QMetaObject::invokeMethod(this, "processNextQueued", Qt::QueuedConnection);
     }
     else
     {
@@ -188,8 +211,6 @@ void CameraPublishWorker::processNextQueued()
         else
             QMetaObject::invokeMethod(this, "processNextQueued", Qt::QueuedConnection);
     }
-
-    Q_UNUSED(published);
 }
 
 void CameraPublishWorker::onFrameGrabbed(const VisionFrame &frame)
@@ -200,7 +221,7 @@ void CameraPublishWorker::onFrameGrabbed(const VisionFrame &frame)
     QMutexLocker lock(&m_queueMutex);
     if (m_strictAccounting)
     {
-        if (!m_pendingFrames.isEmpty())
+        if (m_pendingFrames.size() >= CameraIpc::kRingSlots)
             return;
     }
     else if (m_pendingFrames.size() >= kMaxQueueDepthNonStrict)
