@@ -1,5 +1,8 @@
 #include "GasketInspector.h"
 
+#include "CameraAnnotTarget.h"
+#include "CameraIpcLayout.h"
+
 #include <QJsonArray>
 #include <QFileInfo>
 
@@ -135,11 +138,38 @@ bool GasketInspector::measureRing(const cv::Mat &gray, cv::Point2f &outCenter, d
     return true;
 }
 
-// 绘制测量圆、基准中心点及 OK/NG 文字标注
-void GasketInspector::drawAnnotation(GasketInspectResult &result, const cv::Mat &gray, cv::Point2f center, double odPx, double idPx) const
+// 绘制测量圆、基准中心点及 OK/NG 文字标注（可直写 HMI SHM 标注平面）
+void GasketInspector::drawAnnotation(GasketInspectResult &result, const cv::Mat &gray, cv::Point2f center,
+                                     double odPx, double idPx, CameraAnnotTarget *target) const
 {
     cv::Mat canvas;
-    cv::cvtColor(gray, canvas, cv::COLOR_GRAY2BGR);
+    if (target && target->payload && target->header)
+    {
+        const int width = gray.cols;
+        const int height = gray.rows;
+        const size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+        if (need > target->capacity)
+        {
+            cv::cvtColor(gray, canvas, cv::COLOR_GRAY2BGR);
+        }
+        else
+        {
+            canvas = cv::Mat(height, width, CV_8UC3, target->payload, static_cast<size_t>(width * 3));
+            cv::cvtColor(gray, canvas, cv::COLOR_GRAY2BGR);
+            target->header->magic = CameraIpc::kMagic;
+            target->header->frameId = target->frameId;
+            target->header->width = static_cast<quint32>(width);
+            target->header->height = static_cast<quint32>(height);
+            target->header->bytesPerLine = static_cast<quint32>(width * 3);
+            target->header->format = CameraIpc::Bgr888;
+            target->header->payloadSize = static_cast<quint32>(need);
+        }
+    }
+    else
+    {
+        cv::cvtColor(gray, canvas, cv::COLOR_GRAY2BGR);
+    }
+
     if (odPx > 1.0)
         cv::circle(canvas, center, static_cast<int>(odPx * 0.5), cv::Scalar(0, 220, 0), 2);
     if (idPx > 1.0)
@@ -149,11 +179,14 @@ void GasketInspector::drawAnnotation(GasketInspectResult &result, const cv::Mat 
     const QString label = result.ok ? QStringLiteral("OK") : QStringLiteral("NG");
     const cv::Scalar color = result.ok ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
     cv::putText(canvas, label.toStdString(), cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.2, color, 2);
-    result.annotated = canvas;
+
+    if (!target || !target->payload)
+        result.annotated = canvas;
 }
 
 // 执行模板匹配、圆环测径及容差判定，输出完整检测结果
-GasketInspectResult GasketInspector::inspect(const cv::Mat &image, const QString &sourcePath, int stationId)
+GasketInspectResult GasketInspector::inspect(const cv::Mat &image, const QString &sourcePath, int stationId,
+                                             CameraAnnotTarget *annotTarget)
 {
     Q_UNUSED(stationId);
     GasketInspectResult result;
@@ -185,7 +218,7 @@ GasketInspectResult GasketInspector::inspect(const cv::Mat &image, const QString
     if (matchScore < m_matchScoreMin)
     {
         result.defect = QStringLiteral("缺件");
-        drawAnnotation(result, gray, m_imageCenter, 0.0, 0.0);
+        drawAnnotation(result, gray, m_imageCenter, 0.0, 0.0, annotTarget);
         return result;
     }
 
@@ -193,11 +226,7 @@ GasketInspectResult GasketInspector::inspect(const cv::Mat &image, const QString
     if (!measureRing(gray, partCenter, result.outerDiameterMm, result.innerDiameterMm))
     {
         result.defect = QStringLiteral("缺件");
-        drawAnnotation(result, gray, m_imageCenter, 0.0, 0.0);
-        const QString annotatedPath = sourcePath + QStringLiteral(".annotated.png");
-        result.annotatedImagePath = annotatedPath;
-        if (!result.annotated.empty())
-            cv::imwrite(annotatedPath.toStdString(), result.annotated);
+        drawAnnotation(result, gray, m_imageCenter, 0.0, 0.0, annotTarget);
         return result;
     }
 
@@ -228,12 +257,8 @@ GasketInspectResult GasketInspector::inspect(const cv::Mat &image, const QString
 
     result.ok = ok;
     result.defect = ok ? QString() : defect;
-    drawAnnotation(result, gray, partCenter, result.outerDiameterMm * m_pxPerMm, result.innerDiameterMm * m_pxPerMm);
-
-    const QString annotatedPath = sourcePath + QStringLiteral(".annotated.png");
-    result.annotatedImagePath = annotatedPath;
-    if (!result.annotated.empty())
-        cv::imwrite(annotatedPath.toStdString(), result.annotated);
+    drawAnnotation(result, gray, partCenter, result.outerDiameterMm * m_pxPerMm, result.innerDiameterMm * m_pxPerMm,
+                   annotTarget);
 
     return result;
 }

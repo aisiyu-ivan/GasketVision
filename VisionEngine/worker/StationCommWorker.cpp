@@ -1,38 +1,25 @@
 #include "StationCommWorker.h"
 #include "StationAlgoWorker.h"
 
+#include "CameraAnnotTarget.h"
 #include "CameraIpcLayout.h"
+#include "InspectDispatch.h"
 
 #include <QMetaObject>
 #include <QTimer>
 
 namespace
 {
-constexpr int kPingIntervalMs = 1000;
 constexpr int kPollIntervalMs = 10;
-constexpr int kReadyTickMs = 10;
 constexpr int kCameraReadTimeoutMs = 200;
-constexpr int kHmiSlotAckTotalMs = 60000;
-constexpr int kHmiSlotAckAttemptMs = 3000;
-constexpr int kHmiPublishRetryMs = 500;
 } // namespace
 
 StationCommWorker::StationCommWorker(QObject *parent)
     : QObject(parent)
-    , m_hmiClient(this)
-    , m_cameraServer()
-    , m_pingTimer(new QTimer(this))
     , m_pollTimer(new QTimer(this))
-    , m_readyTimer(new QTimer(this))
 {
-    m_pingTimer->setInterval(kPingIntervalMs);
-    connect(m_pingTimer, &QTimer::timeout, this, &StationCommWorker::onPingTimer);
-
     m_pollTimer->setInterval(kPollIntervalMs);
     connect(m_pollTimer, &QTimer::timeout, this, &StationCommWorker::onPollFrame);
-
-    m_readyTimer->setInterval(kReadyTickMs);
-    connect(m_readyTimer, &QTimer::timeout, this, &StationCommWorker::onReadyTick);
 }
 
 StationCommWorker::~StationCommWorker()
@@ -46,51 +33,18 @@ bool StationCommWorker::configure(const QJsonObject &rootConfig, int stationId, 
     m_stationId = stationId;
     m_algoWorker = algoWorker;
     m_strictAccounting = rootConfig.value(QStringLiteral("strictSampleAccounting")).toBool(true);
-
-    if (!m_hmiIpc.initialize())
-    {
-        emit logMessage(QStringLiteral("HMI IPC 共享内存初始化失败"));
-        return false;
-    }
-
-    return true;
+    return m_algoWorker != nullptr;
 }
 
 bool StationCommWorker::startComm()
 {
-    if (m_strictAccounting && !m_cameraServer.listen())
-    {
-        emit logMessage(QStringLiteral("Camera 本地套接字监听失败（GasketVision.Camera.Control）"));
-        return false;
-    }
-
-    if (!m_hmiClient.connectToHmi())
-    {
-        emit logMessage(QStringLiteral("连接 HMI 本地套接字失败（GasketVision.EngineHmi.Control）"));
-        return false;
-    }
-
-    emit logMessage(QStringLiteral("已连接 HMI 本地套接字（通信线程）"));
-    m_pingTimer->start();
-    if (m_strictAccounting)
-        m_readyTimer->start();
+    emit logMessage(QStringLiteral("通信线程已就绪（仅 SHM，无套接字）"));
     return true;
 }
 
 void StationCommWorker::stopComm()
 {
     stopPipeline();
-    if (m_pingTimer)
-        m_pingTimer->stop();
-    if (m_readyTimer)
-        m_readyTimer->stop();
-    m_hmiClient.disconnectFromHmi();
-    m_cameraServer.close();
-}
-
-bool StationCommWorker::waitUntilReady()
-{
-    return m_hmiClient.isConnected() || m_hmiClient.ensureConnected();
 }
 
 bool StationCommWorker::startPipeline()
@@ -104,9 +58,9 @@ bool StationCommWorker::startPipeline()
         return false;
     }
 
-    if (!waitUntilReady())
+    if (!m_cameraReader.waitForRegion(60000))
     {
-        emit logMessage(QStringLiteral("HMI 本地套接字未就绪"));
+        emit logMessage(QStringLiteral("等待 CameraService 共享内存超时（请先启动 CameraService）"));
         return false;
     }
 
@@ -125,42 +79,25 @@ void StationCommWorker::stopPipeline()
         m_pollTimer->stop();
 }
 
-void StationCommWorker::onReadyTick()
-{
-    if (!m_strictAccounting)
-        return;
-    m_cameraServer.processReadyRequests(m_cameraReader.lastConsumedFrameId());
-}
-
-bool StationCommWorker::requestHmiPublishSlot(quint64 hmiFrameId, int stationId, bool ok)
-{
-    if (!m_hmiClient.sendReadyAndWaitAck(hmiFrameId, stationId, ok, kHmiSlotAckTotalMs, kHmiSlotAckAttemptMs))
-    {
-        emit logMessage(QStringLiteral("等待 HMI 展示空位失败（frameId=%1，已重试）").arg(hmiFrameId));
-        return false;
-    }
-    return true;
-}
-
-void StationCommWorker::onPingTimer()
-{
-    if (!m_hmiClient.isConnected())
-    {
-        if (m_hmiClient.ensureConnected())
-            emit logMessage(QStringLiteral("HMI 本地套接字已重连"));
-        return;
-    }
-    m_hmiClient.sendPing();
-}
-
 void StationCommWorker::tryDispatchInspect()
 {
     if (!m_pipelineRunning || !m_algoWorker || m_inspectRunning || m_pendingInspect.isEmpty())
         return;
 
+    const VisionFrame frame = m_pendingInspect.head();
+
+    CameraAnnotTarget target;
+    if (!m_cameraReader.prepareAnnotTarget(frame.slotIndex, frame.frameId, target))
+    {
+        emit logMessage(QStringLiteral("相机标注槽准备失败（frameId=%1）").arg(frame.frameId));
+        return;
+    }
+
     m_inspectRunning = true;
-    const VisionFrame frame = m_pendingInspect.dequeue();
-    QMetaObject::invokeMethod(m_algoWorker, "inspectFrameAsync", Qt::QueuedConnection, Q_ARG(VisionFrame, frame));
+    const VisionFrame dequeued = m_pendingInspect.dequeue();
+    InspectDispatch dispatch{dequeued, target};
+    QMetaObject::invokeMethod(m_algoWorker, "inspectDispatchAsync", Qt::QueuedConnection,
+                              Q_ARG(InspectDispatch, dispatch));
 }
 
 void StationCommWorker::onPollFrame()
@@ -178,29 +115,21 @@ void StationCommWorker::onPollFrame()
     tryDispatchInspect();
 }
 
-void StationCommWorker::onInspectCompleted(const GasketInspectResult &result, const VisionFrame &frame)
+void StationCommWorker::finishInspectAndNotify(const GasketInspectResult &result, const VisionFrame &frame)
 {
-    if (m_strictAccounting)
+    if (!m_cameraReader.finishInspectPublish(m_stationId, result, frame.cameraStatus, frame.frameId, frame.slotIndex))
     {
-        const quint64 hmiFrameId = m_hmiIpc.lastPublishedFrameId() + 1;
-        if (!requestHmiPublishSlot(hmiFrameId, m_stationId, result.ok))
-        {
-            QTimer::singleShot(kHmiPublishRetryMs, this, [this, result, frame]() {
-                if (m_pipelineRunning)
-                    onInspectCompleted(result, frame);
-            });
-            return;
-        }
-
-        if (!m_hmiIpc.publish(m_stationId, result, frame.image, frame.cameraStatus, hmiFrameId))
-            emit logMessage(QStringLiteral("HMI IPC 发布失败"));
-    }
-    else
-    {
-        if (!m_hmiIpc.publish(m_stationId, result, frame.image, frame.cameraStatus))
-            emit logMessage(QStringLiteral("HMI IPC 发布失败"));
+        emit logMessage(QStringLiteral("相机 IPC 标注发布失败（frameId=%1）").arg(frame.frameId));
+        m_inspectRunning = false;
+        tryDispatchInspect();
+        return;
     }
 
     m_inspectRunning = false;
     tryDispatchInspect();
+}
+
+void StationCommWorker::onInspectCompleted(const GasketInspectResult &result, const VisionFrame &frame)
+{
+    finishInspectAndNotify(result, frame);
 }

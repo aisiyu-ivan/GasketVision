@@ -2,6 +2,7 @@
 #define STATIONALGOWORKER_H
 
 #include "GasketInspector.h"
+#include "InspectDispatch.h"
 #include "VisionFrame.h"
 
 #include <QJsonObject>
@@ -19,10 +20,7 @@ public:
     bool configure(const QJsonObject &rootConfig, int stationId, const QString &configDir = QString());
 
 public slots:
-    // 在算法线程执行单帧检测（异步，完成后 emit inspectCompleted）
-    void inspectFrameAsync(const VisionFrame &frame);
-    // 同步检测（保留供测试或外部调用）
-    GasketInspectResult inspectFrame(const VisionFrame &frame);
+    void inspectDispatchAsync(const InspectDispatch &dispatch);
 
 signals:
     void logMessage(const QString &message);

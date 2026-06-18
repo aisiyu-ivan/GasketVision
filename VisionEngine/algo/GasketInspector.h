@@ -6,6 +6,8 @@
 
 #include <opencv2/core.hpp>
 
+struct CameraAnnotTarget;
+
 // 垫片尺寸规格及各项容差（外径、内径、偏心）
 struct GasketSpec
 {
@@ -39,7 +41,8 @@ public:
     bool configure(const QJsonObject &config);
 
     // 对单帧图像执行完整检测流程并返回结果
-    GasketInspectResult inspect(const cv::Mat &image, const QString &sourcePath, int stationId);
+    GasketInspectResult inspect(const cv::Mat &image, const QString &sourcePath, int stationId,
+                                CameraAnnotTarget *annotTarget = nullptr);
 
 private:
     // 加载灰度定位模板图像
@@ -47,7 +50,8 @@ private:
     // 在 ROI 内通过径向扫描测量圆环内外径及中心
     bool measureRing(const cv::Mat &gray, cv::Point2f &outCenter, double &outOdMm, double &outIdMm) const;
     // 在图像上绘制测量圆、中心点及 OK/NG 标注
-    void drawAnnotation(GasketInspectResult &result, const cv::Mat &gray, cv::Point2f center, double odPx, double idPx) const;
+    void drawAnnotation(GasketInspectResult &result, const cv::Mat &gray, cv::Point2f center, double odPx,
+                        double idPx, CameraAnnotTarget *target = nullptr) const;
 
     GasketSpec m_spec; // 尺寸规格与容差
     double m_pxPerMm = 10.0; // 像素/mm 比例

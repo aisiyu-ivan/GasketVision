@@ -4,11 +4,11 @@
 #include <QByteArray>
 #include <QString>
 
-// 本地套接字共用的「一行一条命令」缓冲解析
+// 本地套接字共用的「一行一条命令」行解析（接收区）
 class SocketLineCodec
 {
 public:
-    // 从缓冲中取出一行（不含换行），无完整行则返回 false
+    // 从接收区取出一行（不含换行），无完整行则返回 false
     static bool takeLine(QByteArray *buffer, QByteArray *lineOut)
     {
         if (!buffer || !lineOut)

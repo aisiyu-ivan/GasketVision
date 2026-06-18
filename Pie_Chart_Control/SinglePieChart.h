@@ -14,7 +14,8 @@ class QFontMetrics;
 class QPaintEvent;
 class QPainter;
 
-class SinglePieChart : public QWidget// 单饼图类
+// 单个饼图控件：标题栏、左侧图例与右侧扇区绘制
+class SinglePieChart : public QWidget
 {
 
 // ---------- 构造与生命周期 ----------

@@ -1,5 +1,6 @@
 #include "StationAlgoWorker.h"
 #include "StationCommWorker.h"
+#include "InspectDispatch.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -27,6 +28,7 @@ int main(int argc, char *argv[])
 {
     qRegisterMetaType<VisionFrame>("VisionFrame");
     qRegisterMetaType<GasketInspectResult>("GasketInspectResult");
+    qRegisterMetaType<InspectDispatch>("InspectDispatch");
 
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("VisionEngine"));

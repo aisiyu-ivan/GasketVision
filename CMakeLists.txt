@@ -15,26 +15,15 @@ set(CAMERA_SERVICE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/CameraService)
 set(LEGACY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Pie_Chart_Control)
 set(CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/config)
 
-set(HMI_SOCKET_ENGINE_HMI_SOURCES
-    ${HMI_DIR}/socket/engine_hmi/EngineHmiSocketServer.cpp
-    ${HMI_DIR}/socket/engine_hmi/EngineHmiSocketServer.h
-    ${HMI_DIR}/socket/engine_hmi/EngineHmiProtocol.h
-)
-
-set(VISION_ENGINE_SOCKET_CAMERA_SOURCES
-    ${VISION_ENGINE_DIR}/socket/camera_engine/CameraEngineSocketServer.cpp
-    ${VISION_ENGINE_DIR}/socket/camera_engine/CameraEngineSocketServer.h
-    ${VISION_ENGINE_DIR}/socket/camera_engine/CameraEngineProtocol.h
-)
-
-set(VISION_ENGINE_SOCKET_ENGINE_HMI_SOURCES
-    ${VISION_ENGINE_DIR}/socket/engine_hmi/EngineHmiSocketClient.cpp
-    ${VISION_ENGINE_DIR}/socket/engine_hmi/EngineHmiSocketClient.h
+set(HMI_SOCKET_CAMERA_HMI_SOURCES
+    ${HMI_DIR}/socket/camera_hmi/CameraHmiSocketServer.cpp
+    ${HMI_DIR}/socket/camera_hmi/CameraHmiSocketServer.h
+    ${HMI_DIR}/socket/camera_hmi/CameraHmiProtocol.h
 )
 
 set(CAMERA_SERVICE_SOCKET_SOURCES
-    ${CAMERA_SERVICE_DIR}/socket/camera_engine/CameraEngineSocketClient.cpp
-    ${CAMERA_SERVICE_DIR}/socket/camera_engine/CameraEngineSocketClient.h
+    ${CAMERA_SERVICE_DIR}/socket/camera_hmi/CameraHmiSocketClient.cpp
+    ${CAMERA_SERVICE_DIR}/socket/camera_hmi/CameraHmiSocketClient.h
 )
 
 # Qt Creator kits set CMAKE_PREFIX_PATH; generic IDE shells often do not.
@@ -154,6 +143,8 @@ set(HMI_SOURCES
     ${HMI_DIR}/main.cpp
     ${HMI_DIR}/ui/InspectionWindow.cpp
     ${HMI_DIR}/ui/InspectionWindow.h
+    ${HMI_DIR}/ui/ShmImageLabel.cpp
+    ${HMI_DIR}/ui/ShmImageLabel.h
     ${HMI_DIR}/ui/OkNgPieChart.cpp
     ${HMI_DIR}/ui/OkNgPieChart.h
     ${HMI_DIR}/stats/OkNgStatsPanel.cpp
@@ -163,13 +154,14 @@ set(HMI_SOURCES
     ${HMI_DIR}/ipc/InspectionDataService.cpp
     ${HMI_DIR}/ipc/InspectionDataService.h
     ${HMI_DIR}/ipc/InspectionResult.h
-    ${HMI_DIR}/ipc/HmiIpcSubscriber.cpp
-    ${HMI_DIR}/ipc/HmiIpcSubscriber.h
-    ${HMI_DIR}/ipc/HmiIpcSubscriberWorker.cpp
-    ${HMI_DIR}/ipc/HmiIpcSubscriberWorker.h
-    ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcSync.cpp
-    ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcSync.h
-    ${HMI_SOCKET_ENGINE_HMI_SOURCES}
+    ${HMI_DIR}/ipc/CameraIpcSubscriber.cpp
+    ${HMI_DIR}/ipc/CameraIpcSubscriber.h
+    ${HMI_DIR}/ipc/CameraIpcSubscriberWorker.cpp
+    ${HMI_DIR}/ipc/CameraIpcSubscriberWorker.h
+    ${CAMERA_SERVICE_DIR}/ipc/CameraIpcLayout.h
+    ${CAMERA_SERVICE_DIR}/ipc/CameraIpcSync.cpp
+    ${CAMERA_SERVICE_DIR}/ipc/CameraIpcSync.h
+    ${HMI_SOCKET_CAMERA_HMI_SOURCES}
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -189,8 +181,8 @@ target_include_directories(HMI PRIVATE
     ${HMI_DIR}/stats
     ${HMI_DIR}/ipc
     ${HMI_DIR}/socket
-    ${HMI_DIR}/socket/engine_hmi
-    ${VISION_ENGINE_DIR}/ipc_hmi
+    ${HMI_DIR}/socket/camera_hmi
+    ${CAMERA_SERVICE_DIR}/ipc
 )
 target_link_libraries(HMI PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -233,8 +225,8 @@ target_include_directories(HMI_Test PRIVATE
     ${HMI_DIR}/stats
     ${HMI_DIR}/ipc
     ${HMI_DIR}/socket
-    ${HMI_DIR}/socket/engine_hmi
-    ${VISION_ENGINE_DIR}/ipc_hmi
+    ${HMI_DIR}/socket/camera_hmi
+    ${CAMERA_SERVICE_DIR}/ipc
 )
 target_link_libraries(HMI_Test PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -289,19 +281,15 @@ if(OpenCV_FOUND)
         ${VISION_ENGINE_DIR}/worker/StationAlgoWorker.h
         ${VISION_ENGINE_DIR}/worker/StationCommWorker.cpp
         ${VISION_ENGINE_DIR}/worker/StationCommWorker.h
+        ${VISION_ENGINE_DIR}/worker/InspectDispatch.h
+        ${VISION_ENGINE_DIR}/ipc_camera/CameraAnnotTarget.h
         ${VISION_ENGINE_DIR}/algo/GasketInspector.cpp
         ${VISION_ENGINE_DIR}/algo/GasketInspector.h
-        ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcLayout.h
-        ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcSync.cpp
-        ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcSync.h
-        ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcPublisher.cpp
-        ${VISION_ENGINE_DIR}/ipc_hmi/HmiIpcPublisher.h
+        ${CAMERA_SERVICE_DIR}/ipc/CameraIpcLayout.h
         ${VISION_ENGINE_DIR}/ipc_camera/CameraIpcReader.cpp
         ${VISION_ENGINE_DIR}/ipc_camera/CameraIpcReader.h
         ${CAMERA_SERVICE_DIR}/ipc/CameraIpcSync.cpp
         ${CAMERA_SERVICE_DIR}/ipc/CameraIpcSync.h
-        ${VISION_ENGINE_SOCKET_CAMERA_SOURCES}
-        ${VISION_ENGINE_SOCKET_ENGINE_HMI_SOURCES}
     )
 
     if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -318,17 +306,11 @@ if(OpenCV_FOUND)
         ${VISION_ENGINE_DIR}/worker
         ${VISION_ENGINE_DIR}/algo
         ${VISION_ENGINE_DIR}/ipc_camera
-        ${VISION_ENGINE_DIR}/ipc_hmi
-        ${VISION_ENGINE_DIR}/socket
-        ${VISION_ENGINE_DIR}/socket/camera_engine
-        ${VISION_ENGINE_DIR}/socket/engine_hmi
-        ${HMI_DIR}/socket/engine_hmi
         ${CAMERA_SERVICE_DIR}/ipc
         ${OpenCV_INCLUDE_DIRS}
     )
     target_link_libraries(VisionEngine PRIVATE
         Qt${QT_VERSION_MAJOR}::Core
-        Qt${QT_VERSION_MAJOR}::Network
         ${OpenCV_LIBS}
     )
 
@@ -361,6 +343,7 @@ if(OpenCV_FOUND)
         ${CAMERA_SERVICE_DIR}/camera/ImageSourceFactory.cpp
         ${CAMERA_SERVICE_DIR}/camera/ImageSourceFactory.h
         ${CAMERA_SERVICE_DIR}/camera/IVisionImageSource.h
+        ${CAMERA_SERVICE_DIR}/camera/IVisionImageSource.cpp
         ${CAMERA_SERVICE_SOCKET_SOURCES}
     )
 
@@ -379,8 +362,8 @@ if(OpenCV_FOUND)
         ${CAMERA_SERVICE_DIR}/camera
         ${CAMERA_SERVICE_DIR}/ipc
         ${CAMERA_SERVICE_DIR}/socket
-        ${CAMERA_SERVICE_DIR}/socket/camera_engine
-        ${VISION_ENGINE_DIR}/socket/camera_engine
+        ${CAMERA_SERVICE_DIR}/socket/camera_hmi
+        ${HMI_DIR}/socket/camera_hmi
         ${OpenCV_INCLUDE_DIRS}
     )
     target_link_libraries(CameraService PRIVATE
@@ -453,7 +436,7 @@ function(piechart_deploy_qt_runtime target_name)
     if(${target_name} STREQUAL HMI OR ${target_name} STREQUAL HMI_Test)
         list(APPEND _qt_dlls Qt6Gui.dll Qt6Widgets.dll)
     endif()
-    if(${target_name} STREQUAL VisionEngine OR ${target_name} STREQUAL CameraService)
+    if(${target_name} STREQUAL CameraService)
         list(APPEND _qt_dlls Qt6Network.dll)
     endif()
     foreach(_dll IN LISTS _qt_dlls)

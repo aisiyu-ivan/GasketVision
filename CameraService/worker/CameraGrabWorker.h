@@ -11,7 +11,7 @@
 
 class QTimer;
 
-// 采图线程：按间隔持续抓取 VisionFrame（环缓反压在发布写 SHM 前）
+// 采图线程：按间隔持续抓取 VisionFrame（环形存储区反压在发布写 SHM 前）
 class CameraGrabWorker : public QObject
 {
     Q_OBJECT

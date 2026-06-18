@@ -15,8 +15,8 @@ class QGridLayout;
 class QPushButton;
 class SinglePieChart;
 
-
-class Widget : public QWidget // 主窗口类
+// 多饼图主窗口：网格布局、配置持久化与外部变量计数接入
+class Widget : public QWidget
 {
     Q_OBJECT
 

@@ -1,8 +1,9 @@
 #ifndef CAMERAPUBLISHWORKER_H
 #define CAMERAPUBLISHWORKER_H
 
-#include "CameraEngineSocketClient.h"
+#include "CameraHmiSocketClient.h"
 #include "CameraIpcPublisher.h"
+#include "IVisionImageSource.h"
 #include "VisionFrame.h"
 
 #include <QJsonObject>
@@ -11,9 +12,11 @@
 #include <QMutex>
 #include <QQueue>
 
+#include <memory>
+
 class QTimer;
 
-// 发布线程：写相机 SHM、严格模式环缓反压握手
+// 发布线程：写相机 SHM、严格模式环形存储区反压握手（Camera ↔ HMI 套接字）
 class CameraPublishWorker : public QObject
 {
     Q_OBJECT
@@ -27,9 +30,11 @@ public:
 public slots:
     bool startPublish();
     void stopPublish();
-    // 严格模式：写相机 SHM 前向 Engine 请求环缓空位
+    // 严格模式：写相机 SHM 前向 HMI 请求存储区空槽（慢路径）或本地判定（快路径）
     bool requestCaptureSlot();
     void onFrameGrabbed(const VisionFrame &frame);
+    // 严格模式：ack 后采图直写 SHM（发布线程内完成）
+    void captureAndPublishDirect();
 
 signals:
     void readyForNextGrab();
@@ -41,13 +46,15 @@ private slots:
 
 private:
     bool publishFrame(const VisionFrame &frame);
+    bool canWriteSlotLocally(quint64 nextFrameId) const;
 
     bool m_strictAccounting = true;
     bool m_running = false;
     int m_intervalMs = 800;
     quint64 m_grantedFrameId = 0;
+    std::unique_ptr<IVisionImageSource> m_source;
     CameraIpcPublisher m_publisher;
-    CameraEngineSocketClient m_socketClient;
+    CameraHmiSocketClient m_socketClient;
     QMutex m_queueMutex;
     QQueue<VisionFrame> m_pendingFrames;
     bool m_processing = false;

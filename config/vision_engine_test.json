@@ -11,7 +11,7 @@
     "offsetTolMm": 0.12
   },
   "templatePath": "templates/fiducial_L.png",
-  "strictSampleAccounting": false,
+  "strictSampleAccounting": true,
   "synthetic": {
     "folder": "station1",
     "intervalMs": 800

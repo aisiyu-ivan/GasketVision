@@ -7,7 +7,8 @@
 #include <QString>
 #include <QStringList>
 
-class PieChartConfig// 饼图配置类
+// 多饼图布局与变量配置：行列、饼数、填充顺序及 JSON 持久化
+class PieChartConfig
 {
 
 // ---------- 构造与生命周期 ----------
@@ -29,7 +30,8 @@ public:
     int rows() const { return m_rows; }               // 读取配置对象的行数
     int cols() const { return m_cols; }               // 读取配置对象的列数
     int pieCount() const { return m_pieCount; }         // 读取配置对象的饼图数量
-    enum class FillOrder// 填充顺序枚举类
+    // 饼图在网格中的填充顺序
+    enum class FillOrder
     {
         RowMajor,    // 行优先：先填满一行再换行
         ColumnMajor, // 列优先：先填满一列再换列

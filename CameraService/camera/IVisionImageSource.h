@@ -22,6 +22,8 @@ public:
     virtual QString statusText() const = 0;
     // 抓取下一帧并填入 out
     virtual bool grabFrame(VisionFrame &out) = 0;
+    // 直写下一帧像素到 dst（容量 capacity 字节），元数据写入 out；默认回退 grabFrame+memcpy
+    virtual bool grabFrameInto(uchar *dst, int capacity, VisionFrame &out);
 };
 
 #endif // IVISIONIMAGESOURCE_H

@@ -1,6 +1,7 @@
 #include "CameraPublishWorker.h"
 
 #include "CameraIpcLayout.h"
+#include "ImageSourceFactory.h"
 
 #include <QJsonArray>
 #include <QMutexLocker>
@@ -10,9 +11,9 @@
 namespace
 {
 constexpr int kMaxQueueDepthNonStrict = 2;
-constexpr int kEngineConnectAttempts = 60;
-constexpr int kEngineConnectTimeoutMs = 1000;
-constexpr int kEngineConnectRetryMs = 500;
+constexpr int kHmiConnectAttempts = 60;
+constexpr int kHmiConnectTimeoutMs = 1000;
+constexpr int kHmiConnectRetryMs = 500;
 constexpr int kSlotAckTotalMs = 60000;
 constexpr int kSlotAckAttemptMs = 3000;
 constexpr int kSlotRetryMs = 500;
@@ -61,6 +62,10 @@ bool CameraPublishWorker::configure(const QJsonObject &rootConfig)
     if (!m_publisher.initialize())
         return false;
 
+    m_source = ImageSourceFactory::create(rootConfig);
+    if (!m_source || !m_source->open(rootConfig))
+        return false;
+
     return true;
 }
 
@@ -71,24 +76,25 @@ bool CameraPublishWorker::startPublish()
 
     if (m_strictAccounting)
     {
-        for (int attempt = 0; attempt < kEngineConnectAttempts; ++attempt)
+        for (int attempt = 0; attempt < kHmiConnectAttempts; ++attempt)
         {
-            if (m_socketClient.connectToEngine(kEngineConnectTimeoutMs))
+            if (m_socketClient.connectToHmi(kHmiConnectTimeoutMs))
                 break;
-            QThread::msleep(static_cast<unsigned long>(kEngineConnectRetryMs));
+            QThread::msleep(static_cast<unsigned long>(kHmiConnectRetryMs));
         }
         if (!m_socketClient.isConnected())
         {
-            emit logMessage(QStringLiteral("连接 VisionEngine 相机控制套接字失败"));
+            emit logMessage(QStringLiteral("连接 HMI 相机控制套接字失败（GasketVision.CameraHmi.Control）"));
             return false;
         }
     }
 
     m_running = true;
-    emit logMessage(QStringLiteral("发布线程已启动（SHM%s）")
-                        .arg(m_strictAccounting ? QStringLiteral(" + 环缓反压") : QString()));
+    emit logMessage(QStringLiteral("发布线程已启动（SHM%1）")
+                        .arg(m_strictAccounting ? QStringLiteral(" + 环形存储区反压 + 直写")
+                                                  : QStringLiteral(" + 非严格队列")));
     if (m_strictAccounting)
-        emit readyForNextGrab();
+        QMetaObject::invokeMethod(this, "captureAndPublishDirect", Qt::QueuedConnection);
     return true;
 }
 
@@ -103,27 +109,80 @@ void CameraPublishWorker::stopPublish()
     m_processing = false;
     m_grantedFrameId = 0;
 
-    m_socketClient.disconnectFromEngine();
+    m_socketClient.disconnectFromHmi();
+    if (m_source)
+        m_source->close();
+}
+
+void CameraPublishWorker::captureAndPublishDirect()
+{
+    if (!m_running || !m_strictAccounting || !m_source)
+        return;
+
+    if (!requestCaptureSlot())
+    {
+        QTimer::singleShot(kSlotRetryMs, this, &CameraPublishWorker::captureAndPublishDirect);
+        return;
+    }
+
+    const quint64 frameId = m_grantedFrameId;
+    if (!m_publisher.captureFromSource(frameId, *m_source))
+    {
+        emit logMessage(QStringLiteral("相机 SHM 直写失败（frameId=%1）").arg(frameId));
+        m_grantedFrameId = 0;
+        QTimer::singleShot(kSlotRetryMs, this, &CameraPublishWorker::captureAndPublishDirect);
+        return;
+    }
+
+    if (!m_publisher.waitForAnnotated(frameId, 15000))
+        emit logMessage(QStringLiteral("等待引擎标注超时（frameId=%1）").arg(frameId));
+
+    m_grantedFrameId = 0;
+    m_intervalTimer->start(m_intervalMs);
 }
 
 void CameraPublishWorker::emitReadyForNextGrab()
 {
     if (!m_running)
         return;
-    emit readyForNextGrab();
+    if (m_strictAccounting)
+        QMetaObject::invokeMethod(this, "captureAndPublishDirect", Qt::QueuedConnection);
+    else
+        emit readyForNextGrab();
+}
+
+bool CameraPublishWorker::canWriteSlotLocally(quint64 nextFrameId) const
+{
+    if (nextFrameId == 0)
+        return false;
+    if (nextFrameId <= CameraIpc::kRingSlots)
+        return true;
+    const quint64 blocker = nextFrameId - static_cast<quint64>(CameraIpc::kRingSlots);
+    return m_socketClient.lastAckedFrameId() >= blocker;
 }
 
 bool CameraPublishWorker::requestCaptureSlot()
 {
     if (!m_running || !m_strictAccounting)
         return true;
-    if (!m_socketClient.isConnected() && !m_socketClient.connectToEngine(kEngineConnectTimeoutMs))
-        return false;
 
     const quint64 nextFrameId = m_publisher.lastPublishedFrameId() + 1;
-    if (!m_socketClient.sendReadyAndWaitAck(nextFrameId, kSlotAckTotalMs, kSlotAckAttemptMs))
+    const quint32 slotIndex = static_cast<quint32>(nextFrameId % CameraIpc::kRingSlots);
+
+    if (canWriteSlotLocally(nextFrameId))
     {
-        emit logMessage(QStringLiteral("等待 Engine 采图空位失败（frameId=%1，已重试）").arg(nextFrameId));
+        m_grantedFrameId = nextFrameId;
+        return true;
+    }
+
+    if (!m_socketClient.isConnected() && !m_socketClient.connectToHmi(kHmiConnectTimeoutMs))
+        return false;
+
+    if (!m_socketClient.sendReadyAndWaitAck(nextFrameId, slotIndex, kSlotAckTotalMs, kSlotAckAttemptMs))
+    {
+        emit logMessage(QStringLiteral("等待 HMI 采图空位失败（frameId=%1 slot=%2，已重试）")
+                            .arg(nextFrameId)
+                            .arg(slotIndex));
         return false;
     }
 
@@ -145,6 +204,8 @@ bool CameraPublishWorker::publishFrame(const VisionFrame &frame)
             emit logMessage(QStringLiteral("相机 SHM 发布失败"));
             return false;
         }
+        if (!m_publisher.waitForAnnotated(m_grantedFrameId, 15000))
+            emit logMessage(QStringLiteral("等待引擎标注超时（frameId=%1）").arg(m_grantedFrameId));
         m_grantedFrameId = 0;
         return true;
     }

@@ -1,6 +1,6 @@
-#include "CameraEngineSocketClient.h"
+#include "CameraHmiSocketClient.h"
 
-#include "CameraEngineProtocol.h"
+#include "CameraHmiProtocol.h"
 #include "SocketLineCodec.h"
 
 #include <QDateTime>
@@ -8,22 +8,19 @@
 #include <QThread>
 #include <QtGlobal>
 
-// 构造套接字客户端
-CameraEngineSocketClient::CameraEngineSocketClient()
+CameraHmiSocketClient::CameraHmiSocketClient()
     : m_socket(new QLocalSocket())
 {
 }
 
-// 断开连接并释放套接字
-CameraEngineSocketClient::~CameraEngineSocketClient()
+CameraHmiSocketClient::~CameraHmiSocketClient()
 {
-    disconnectFromEngine();
+    disconnectFromHmi();
     delete m_socket;
     m_socket = nullptr;
 }
 
-// 连接 VisionEngine 控制端
-bool CameraEngineSocketClient::connectToEngine(int timeoutMs)
+bool CameraHmiSocketClient::connectToHmi(int timeoutMs)
 {
     if (!m_socket)
         return false;
@@ -31,15 +28,14 @@ bool CameraEngineSocketClient::connectToEngine(int timeoutMs)
         return true;
 
     m_socket->abort();
-    m_socket->connectToServer(CameraEngineProtocol::serverName());
+    m_socket->connectToServer(CameraHmiProtocol::serverName());
     if (!m_socket->waitForConnected(timeoutMs))
         return false;
     m_readBuffer.clear();
-    return true;
+    return writeLine(CameraHmiProtocol::helloLine());
 }
 
-// 断开与引擎的连接
-void CameraEngineSocketClient::disconnectFromEngine()
+void CameraHmiSocketClient::disconnectFromHmi()
 {
     if (!m_socket)
         return;
@@ -48,14 +44,12 @@ void CameraEngineSocketClient::disconnectFromEngine()
     m_readBuffer.clear();
 }
 
-// 是否已连接引擎
-bool CameraEngineSocketClient::isConnected() const
+bool CameraHmiSocketClient::isConnected() const
 {
     return m_socket && m_socket->state() == QLocalSocket::ConnectedState;
 }
 
-// 写入一行协议文本
-bool CameraEngineSocketClient::writeLine(const QString &line)
+bool CameraHmiSocketClient::writeLine(const QString &line)
 {
     if (!isConnected())
         return false;
@@ -65,23 +59,25 @@ bool CameraEngineSocketClient::writeLine(const QString &line)
     return m_socket->waitForBytesWritten(3000);
 }
 
-// 发送 ready <frameId>
-bool CameraEngineSocketClient::sendReady(quint64 frameId)
+bool CameraHmiSocketClient::sendReady(quint64 frameId, quint32 slotIndex)
 {
-    return writeLine(CameraEngineProtocol::readyLine(frameId));
+    return writeLine(CameraHmiProtocol::readyLine(frameId, slotIndex));
 }
 
-// 非阻塞读取套接字数据到缓冲
-void CameraEngineSocketClient::drainIncoming()
+bool CameraHmiSocketClient::sendPing()
+{
+    return writeLine(CameraHmiProtocol::pingLine());
+}
+
+void CameraHmiSocketClient::drainIncoming()
 {
     if (!isConnected())
         return;
-    if (m_socket->waitForReadyRead(0))
+    if (m_socket->bytesAvailable() > 0)
         m_readBuffer += m_socket->readAll();
 }
 
-// 阻塞等待引擎回 ack <frameId>
-bool CameraEngineSocketClient::waitAck(quint64 expectedFrameId, int timeoutMs)
+bool CameraHmiSocketClient::waitAck(quint32 expectedSlotIndex, int timeoutMs)
 {
     if (!isConnected())
         return false;
@@ -89,14 +85,27 @@ bool CameraEngineSocketClient::waitAck(quint64 expectedFrameId, int timeoutMs)
     drainIncoming();
 
     const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+    qint64 lastPingMs = QDateTime::currentMSecsSinceEpoch();
     while (QDateTime::currentMSecsSinceEpoch() < deadline)
     {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - lastPingMs >= 1000)
+        {
+            sendPing();
+            lastPingMs = now;
+        }
+
         QByteArray line;
         while (SocketLineCodec::takeLine(&m_readBuffer, &line))
         {
-            quint64 id = 0;
-            if (CameraEngineProtocol::parseAck(line, &id) && id == expectedFrameId)
+            quint32 slot = 0;
+            quint64 releasedId = 0;
+            if (CameraHmiProtocol::parseAck(line, &slot, &releasedId) && slot == expectedSlotIndex)
+            {
+                if (releasedId > m_lastAckedFrameId)
+                    m_lastAckedFrameId = releasedId;
                 return true;
+            }
         }
 
         const int remaining = static_cast<int>(deadline - QDateTime::currentMSecsSinceEpoch());
@@ -109,7 +118,8 @@ bool CameraEngineSocketClient::waitAck(quint64 expectedFrameId, int timeoutMs)
     return false;
 }
 
-bool CameraEngineSocketClient::sendReadyAndWaitAck(quint64 frameId, int totalTimeoutMs, int attemptTimeoutMs)
+bool CameraHmiSocketClient::sendReadyAndWaitAck(quint64 frameId, quint32 slotIndex, int totalTimeoutMs,
+                                                int attemptTimeoutMs)
 {
     if (frameId == 0)
         return false;
@@ -119,15 +129,15 @@ bool CameraEngineSocketClient::sendReadyAndWaitAck(quint64 frameId, int totalTim
 
     while (QDateTime::currentMSecsSinceEpoch() < deadline)
     {
-        if (!isConnected() && !connectToEngine(3000))
+        if (!isConnected() && !connectToHmi(3000))
         {
             QThread::msleep(200);
             continue;
         }
 
-        if (!sendReady(frameId))
+        if (!sendReady(frameId, slotIndex))
         {
-            disconnectFromEngine();
+            disconnectFromHmi();
             QThread::msleep(200);
             continue;
         }
@@ -136,7 +146,7 @@ bool CameraEngineSocketClient::sendReadyAndWaitAck(quint64 frameId, int totalTim
         if (remaining <= 0)
             break;
 
-        if (waitAck(frameId, qMin(attemptMs, remaining)))
+        if (waitAck(slotIndex, qMin(attemptMs, remaining)))
             return true;
     }
 

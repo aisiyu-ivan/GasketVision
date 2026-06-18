@@ -3,6 +3,7 @@
 
 #include "InspectionResult.h"
 #include "OkNgStatsPanel.h"
+#include "ShmImageLabel.h"
 
 #include <QHash>
 #include <QLabel>
@@ -11,6 +12,7 @@
 #include <QMainWindow>
 #include <QPixmap>
 #include <QPushButton>
+#include <QTimer>
 
 class InspectionDataService;
 
@@ -30,6 +32,10 @@ public:
     // 更新右侧 OK/NG 饼图计数
     void setPieCounts(const QHash<QString, unsigned int> &counts);
 
+signals:
+    // IPC 帧落盘并 paint 完成后通知释放相机存储区槽
+    void ipcDisplayFinished(quint64 frameId);
+
 protected:
     // 窗口尺寸变化时重绘图像
     void resizeEvent(QResizeEvent *event) override;
@@ -43,10 +49,11 @@ private slots:
     void onSaveImage();
     // 导出 OK/NG 统计 JSON 及面板截图
     void onSavePieData();
-    // 切换原图与检测标注图显示
-    void onToggleView();
+    void onIpcFramePainted(quint64 frameId);
+    void onIpcPaintFallback();
 
 private:
+    bool saveIpcImagesToDisk(const InspectionResult &result, QString *errorOut);
     // 加载 OK/NG 计数配置
     void initStatsPanel();
     // 按编译 profile 固定工作目录与窗口标题
@@ -80,23 +87,25 @@ private:
     QPushButton *m_btnLoadImage = nullptr;     // 「从文件加载图片」按钮
     QPushButton *m_btnSaveImage = nullptr;     // 「另存为图片」按钮
     QPushButton *m_btnSavePieData = nullptr;   // 「另存为统计数据」按钮
-    QPushButton *m_btnToggleView = nullptr;    // 原图/检测图切换按钮
     QLabel *m_resultLabel = nullptr;           // 顶部「状态:」标签
     QLabel *m_modeLabel = nullptr;             // 顶部模式标签（相机/测试）
     QLabel *m_statusLabel = nullptr;           // 顶部状态/OK-NG 文字
     QWidget *m_headerBar = nullptr;            // 顶部工具栏容器
-    QLabel *m_imageLabel = nullptr;            // 左侧图像显示区
+    QLabel *m_imageLabel = nullptr;            // 文件模式图像显示区
+    ShmImageLabel *m_shmImageLabel = nullptr;  // IPC 浅拷 SHM 视图显示
     OkNgStatsPanel *m_statsPanel = nullptr;    // 右侧 OK/NG 统计面板
     InspectionDataService *m_dataService = nullptr; // 检测数据服务
     bool m_pipelineReady = false;              // 本地套接字是否已就绪
     bool m_pipelineLaunchAttempted = false;      // 是否已尝试分离启动 Engine/Camera
     QString m_activeWorkDir;                     // 当前 profile 工作目录
 
-    QString m_originalPath;                      // 原图文件路径
     QString m_annotatedPath;                     // 标注图文件路径
-    QPixmap m_originalPixmap;                    // 原图像素缓存
-    QPixmap m_annotatedPixmap;                 // 标注图像素缓存
-    bool m_showAnnotated = false;                // 是否显示标注图
+    QPixmap m_loadedPixmap;                      // 手动加载图像（文件模式）
+    QPixmap m_annotatedPixmap;                 // 标注图像素缓存（文件模式）
+    bool m_ipcDisplayActive = false;           // 当前是否 IPC 浅拷显示
+    QImage m_ipcAnnotatedView;                 // 相机 SHM 标注浅拷视图
+    quint64 m_pendingIpcReleaseFrameId = 0;
+    QTimer *m_ipcPaintFallbackTimer = nullptr;
     QString m_lastOkNg = QStringLiteral("—");  // 最近一次 OK/NG 文字
 };
 

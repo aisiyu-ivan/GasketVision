@@ -49,10 +49,16 @@ int main(int argc, char *argv[])
     });
 
     if (!grabWorker->configure(config))
+    {
+        qCritical("CameraService: 采图线程配置失败（检查 imageSource / station1 样品目录 / GigE 连接）");
         return 3;
+    }
 
     if (!publishWorker->configure(config))
+    {
+        qCritical("CameraService: 发布线程配置失败（SHM 初始化或采图源 open 失败）");
         return 4;
+    }
 
     grabWorker->moveToThread(&grabThread);
     publishWorker->moveToThread(&publishThread);
@@ -81,12 +87,19 @@ int main(int argc, char *argv[])
     QMetaObject::invokeMethod(publishWorker, "startPublish", Qt::BlockingQueuedConnection,
                               Q_RETURN_ARG(bool, publishOk));
     if (!publishOk)
+    {
+        qCritical("CameraService: 发布启动失败（严格模式需 HMI 先 listen CameraHmi.Control）");
         return 5;
+    }
 
-    bool grabOk = false;
-    QMetaObject::invokeMethod(grabWorker, "startGrab", Qt::BlockingQueuedConnection, Q_RETURN_ARG(bool, grabOk));
-    if (!grabOk)
-        return 6;
+    const bool strictAccounting = config.value(QStringLiteral("strictSampleAccounting")).toBool(true);
+    if (!strictAccounting)
+    {
+        bool grabOk = false;
+        QMetaObject::invokeMethod(grabWorker, "startGrab", Qt::BlockingQueuedConnection, Q_RETURN_ARG(bool, grabOk));
+        if (!grabOk)
+            return 6;
+    }
 
     return app.exec();
 }

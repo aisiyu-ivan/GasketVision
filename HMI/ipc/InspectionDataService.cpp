@@ -10,26 +10,32 @@ InspectionDataService::InspectionDataService(InspectionWindow *window, QObject *
 {
     qRegisterMetaType<InspectionResult>("InspectionResult");
 
-    m_hmiIpcSubscriber = new HmiIpcSubscriber(this);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::listenReady, this, [this]() {
-        emit statusMessage(QStringLiteral("HMI 本地套接字已就绪（VisionEngine ↔ HMI）"));
+    m_cameraIpcSubscriber = new CameraIpcSubscriber(this);
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::listenReady, this, [this]() {
+        emit statusMessage(QStringLiteral("HMI 本地套接字已就绪（Camera ↔ HMI）"));
         emit statusSocketListening();
     }, Qt::QueuedConnection);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::clientConnected, this, [this]() {
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::clientConnected, this, [this]() {
         m_clientConnected = true;
-        emit statusMessage(QStringLiteral("VisionEngine 已连接（本地套接字）"));
+        if (m_cameraIpcSubscriber)
+            m_cameraIpcSubscriber->resetConnection();
+        emit statusMessage(QStringLiteral("CameraService 已连接（本地套接字）"));
     }, Qt::QueuedConnection);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::clientDisconnected, this, [this]() {
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::clientDisconnected, this, [this]() {
         m_clientConnected = false;
-        emit statusMessage(QStringLiteral("VisionEngine 已断开（本地套接字）"));
+        emit statusMessage(QStringLiteral("CameraService 已断开（本地套接字）"));
     }, Qt::QueuedConnection);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::listenFailed, this,
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::listenFailed, this,
             [this](const QString &reason) {
                 emit statusMessage(QStringLiteral("HMI 本地套接字监听失败 — %1").arg(reason));
             },
             Qt::QueuedConnection);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::frameReceived, this, &InspectionDataService::onFrame);
-    connect(m_hmiIpcSubscriber, &HmiIpcSubscriber::errorMessage, this, &InspectionDataService::statusMessage);
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::frameReceived, this, &InspectionDataService::onFrame);
+    connect(m_cameraIpcSubscriber, &CameraIpcSubscriber::errorMessage, this, &InspectionDataService::statusMessage);
+    connect(m_window, &InspectionWindow::ipcDisplayFinished, this, [this](quint64 frameId) {
+        if (m_cameraIpcSubscriber)
+            m_cameraIpcSubscriber->releaseDisplaySlot(frameId);
+    });
 
     m_flushTimer = new QTimer(this);
     m_flushTimer->setInterval(50);
@@ -41,8 +47,8 @@ InspectionDataService::~InspectionDataService() = default;
 
 void InspectionDataService::resetIpcConnection()
 {
-    if (m_hmiIpcSubscriber)
-        m_hmiIpcSubscriber->resetConnection();
+    if (m_cameraIpcSubscriber)
+        m_cameraIpcSubscriber->resetConnection();
 }
 
 void InspectionDataService::clearSession()
@@ -56,8 +62,8 @@ void InspectionDataService::clearSession()
 
 void InspectionDataService::startCommunication()
 {
-    if (m_hmiIpcSubscriber)
-        m_hmiIpcSubscriber->startComm();
+    if (m_cameraIpcSubscriber)
+        m_cameraIpcSubscriber->startComm();
 }
 
 void InspectionDataService::onFrame(const InspectionResult &result)

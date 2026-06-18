@@ -2,7 +2,7 @@
 #define INSPECTIONDATASERVICE_H
 
 #include "InspectionAggregator.h"
-#include "HmiIpcSubscriber.h"
+#include "CameraIpcSubscriber.h"
 #include "InspectionResult.h"
 
 #include <QObject>
@@ -10,7 +10,7 @@
 
 class InspectionWindow;
 
-// 检测数据服务：通信线程收 SHM + 套接字 ack，主线程聚合 OK/NG 并刷 UI
+// 检测数据服务：子线程收 SHM/套接字，主线程聚合 OK/NG 并刷 UI
 class InspectionDataService : public QObject
 {
     Q_OBJECT
@@ -40,7 +40,7 @@ private:
 
     InspectionWindow *m_window = nullptr;
     InspectionAggregator m_aggregator;
-    HmiIpcSubscriber *m_hmiIpcSubscriber = nullptr;
+    CameraIpcSubscriber *m_cameraIpcSubscriber = nullptr;
     QTimer *m_flushTimer = nullptr;
     bool m_dirty = false;
     bool m_clientConnected = false;

@@ -16,7 +16,8 @@ class QLineEdit;
 class QPushButton;
 class QVBoxLayout;
 
-class PieChartConfigDialog final : public QDialog // 配置对话框类
+// 饼图配置对话框：编辑网格/饼数/变量名与计数，支持另存为与从文件加载
+class PieChartConfigDialog final : public QDialog
 {
     Q_OBJECT
 

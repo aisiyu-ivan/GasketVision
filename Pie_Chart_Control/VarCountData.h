@@ -3,10 +3,11 @@
 
 #include <QString>
 
-typedef struct tagVarCountData// 变量结构体
+// 饼图扇区数据：变量名及其计数
+typedef struct tagVarCountData
 {
-    QString name;// 变量名
-    unsigned int count; // 变量计数
+    QString name;           // 变量名
+    unsigned int count = 0; // 变量计数
 } VarCountData;
 
 #endif // VARCOUNTDATA_H

@@ -84,8 +84,6 @@ InspectionWindow::InspectionWindow(QWidget *parent)
     m_btnLoadImage = new QPushButton(QStringLiteral("从文件加载图片"));
     m_btnSaveImage = new QPushButton(QStringLiteral("另存为图片"));
     m_btnSavePieData = new QPushButton(QStringLiteral("另存为统计数据"));
-    m_btnToggleView = new QPushButton(QStringLiteral("原图"));
-    m_btnToggleView->setCheckable(true);
     m_resultLabel = new QLabel(QStringLiteral("状态:"));
     QFont resultFont = m_resultLabel->font();
     resultFont.setPointSize(16);
@@ -113,7 +111,6 @@ InspectionWindow::InspectionWindow(QWidget *parent)
     btnLayout->addWidget(m_btnLoadImage);
     btnLayout->addWidget(m_btnSaveImage);
     btnLayout->addWidget(m_btnSavePieData);
-    btnLayout->addWidget(m_btnToggleView);
 
     auto *statusWidget = new QWidget(m_headerBar);
     statusWidget->setStyleSheet(QStringLiteral("background:transparent;"));
@@ -155,7 +152,18 @@ InspectionWindow::InspectionWindow(QWidget *parent)
     m_imageLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_imageLabel->setStyleSheet(QStringLiteral("background: transparent; color: #aaa;"));
     m_imageLabel->setText(QStringLiteral("等待检测图像…"));
+
+    m_shmImageLabel = new ShmImageLabel(imagePanel);
+    m_shmImageLabel->hide();
+
     imageLayout->addWidget(m_imageLabel);
+    imageLayout->addWidget(m_shmImageLabel);
+
+    m_ipcPaintFallbackTimer = new QTimer(this);
+    m_ipcPaintFallbackTimer->setSingleShot(true);
+    m_ipcPaintFallbackTimer->setInterval(2000);
+    connect(m_ipcPaintFallbackTimer, &QTimer::timeout, this, &InspectionWindow::onIpcPaintFallback);
+    connect(m_shmImageLabel, &ShmImageLabel::framePainted, this, &InspectionWindow::onIpcFramePainted);
 
     auto *gutter = new QWidget(bodyWidget);
     gutter->setFixedWidth(16);
@@ -183,7 +191,6 @@ InspectionWindow::InspectionWindow(QWidget *parent)
     connect(m_btnLoadImage, &QPushButton::clicked, this, &InspectionWindow::onLoadImage);
     connect(m_btnSaveImage, &QPushButton::clicked, this, &InspectionWindow::onSaveImage);
     connect(m_btnSavePieData, &QPushButton::clicked, this, &InspectionWindow::onSavePieData);
-    connect(m_btnToggleView, &QPushButton::clicked, this, &InspectionWindow::onToggleView);
 
     initStatsPanel();
     initProfile();
@@ -200,7 +207,10 @@ InspectionWindow::InspectionWindow(QWidget *parent)
 void InspectionWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    updateImageView();
+    if (m_ipcDisplayActive)
+        m_shmImageLabel->update();
+    else
+        updateImageView();
 }
 
 // 首次显示时刷新模式标签样式
@@ -226,38 +236,101 @@ void InspectionWindow::initStatsPanel()
     }
 }
 
-// 根据 TCP 推送的检测结果更新图像与结果标签
+// 根据检测结果更新图像与 OK/NG 状态标签
 void InspectionWindow::applyInspectionResult(const InspectionResult &result)
 {
-    if (result.fromIpc && !result.originalImage.isNull())
-        m_originalPixmap = QPixmap::fromImage(result.originalImage);
-    else if (!result.imagePath.isEmpty())
+    if (result.fromIpc)
     {
-        m_originalPath = resolveImagePath(result.imagePath);
-        m_originalPixmap = loadPixmap(m_originalPath);
-    }
+        if (result.annotatedImage.isNull())
+        {
+            setStatusMessage(QStringLiteral("收到 IPC 帧但标注图为空（检查 Engine 是否已标注发布）"));
+            return;
+        }
 
-    if (result.fromIpc && !result.annotatedImage.isNull())
-        m_annotatedPixmap = QPixmap::fromImage(result.annotatedImage);
+        m_ipcDisplayActive = true;
+        m_ipcAnnotatedView = result.annotatedImage;
+        m_pendingIpcReleaseFrameId = result.frameId;
+        m_imageLabel->hide();
+        m_shmImageLabel->show();
+        m_shmImageLabel->setShmImageView(m_ipcAnnotatedView, result.frameId);
+        m_ipcPaintFallbackTimer->start();
+
+        QString saveError;
+        if (!saveIpcImagesToDisk(result, &saveError))
+            setStatusMessage(QStringLiteral("图像已显示，落盘失败：%1").arg(saveError));
+    }
     else
     {
+        m_ipcDisplayActive = false;
+        m_pendingIpcReleaseFrameId = 0;
+        m_ipcPaintFallbackTimer->stop();
+        m_shmImageLabel->clearShmView();
+        m_shmImageLabel->hide();
+        m_imageLabel->show();
+
         const QString annotated = result.annotatedImagePath.isEmpty() ? result.imagePath : result.annotatedImagePath;
         if (!annotated.isEmpty())
         {
             m_annotatedPath = resolveImagePath(annotated);
             m_annotatedPixmap = loadPixmap(m_annotatedPath);
         }
+        if (m_annotatedPixmap.isNull())
+            return;
+        updateImageView();
     }
-
-    if (m_annotatedPixmap.isNull() && !m_originalPixmap.isNull())
-        m_annotatedPixmap = m_originalPixmap;
 
     m_lastOkNg = result.ok ? QStringLiteral("OK") : QStringLiteral("NG");
     m_statusLabel->setText(m_lastOkNg);
     m_statusLabel->setStyleSheet(result.ok ? QStringLiteral("color:#2ecc71;background:transparent;")
                                            : QStringLiteral("color:#e74c3c;background:transparent;"));
+}
 
-    updateImageView();
+bool InspectionWindow::saveIpcImagesToDisk(const InspectionResult &result, QString *errorOut)
+{
+    const QString baseDir = m_activeWorkDir.isEmpty() ? QDir::currentPath() : m_activeWorkDir;
+    const QString capturesDir = QDir(baseDir).filePath(QStringLiteral("captures"));
+    if (!QDir().mkpath(capturesDir))
+    {
+        if (errorOut)
+            *errorOut = capturesDir;
+        return false;
+    }
+
+    const QString annotRel = result.annotatedImagePath.isEmpty()
+                                 ? QStringLiteral("captures/%1_annot.png").arg(result.frameId)
+                                 : result.annotatedImagePath;
+    const QString annotPath = resolveImagePath(annotRel);
+
+    QFileInfo annotFi(annotPath);
+    annotFi.dir().mkpath(QStringLiteral("."));
+
+    if (!result.annotatedImage.save(annotPath))
+    {
+        if (errorOut)
+            *errorOut = annotPath;
+        return false;
+    }
+
+    m_annotatedPath = annotPath;
+    return true;
+}
+
+void InspectionWindow::onIpcFramePainted(quint64 frameId)
+{
+    if (frameId == 0 || frameId != m_pendingIpcReleaseFrameId)
+        return;
+    m_ipcPaintFallbackTimer->stop();
+    m_pendingIpcReleaseFrameId = 0;
+    emit ipcDisplayFinished(frameId);
+}
+
+void InspectionWindow::onIpcPaintFallback()
+{
+    if (m_pendingIpcReleaseFrameId == 0)
+        return;
+    const quint64 frameId = m_pendingIpcReleaseFrameId;
+    m_pendingIpcReleaseFrameId = 0;
+    emit ipcDisplayFinished(frameId);
 }
 
 // 按编译 profile 固定工作目录与窗口标题
@@ -372,15 +445,6 @@ bool InspectionWindow::launchDetachedPipeline()
     }
 
     const QStringList args{QStringLiteral("vision_engine.json")};
-    const auto launchCamera = [this, cameraExe, workDir, args]() {
-        if (!QProcess::startDetached(cameraExe, args, workDir))
-        {
-            setStatusMessage(QStringLiteral("启动 CameraService 失败"));
-            return;
-        }
-        setStatusMessage(kTestHmi ? QStringLiteral("后台已启动，等待合成样品…")
-                                  : QStringLiteral("后台已启动，等待相机采图…"));
-    };
 
     if (!QProcess::startDetached(engineExe, args, workDir))
     {
@@ -388,8 +452,15 @@ bool InspectionWindow::launchDetachedPipeline()
         return false;
     }
 
+    QTimer::singleShot(500, this, [this, cameraExe, workDir, args]() {
+        if (!QProcess::startDetached(cameraExe, args, workDir))
+            setStatusMessage(QStringLiteral("启动 CameraService 失败"));
+        else
+            setStatusMessage(kTestHmi ? QStringLiteral("检测链路已就绪，等待合成样品…")
+                                      : QStringLiteral("检测链路已就绪，等待相机采图…"));
+    });
+
     setStatusMessage(QStringLiteral("正在启动 VisionEngine 与 CameraService…"));
-    QTimer::singleShot(kPipelineStaggerMs, this, launchCamera);
     return true;
 }
 
@@ -499,10 +570,13 @@ QPixmap InspectionWindow::loadPixmap(const QString &path) const
     return px;
 }
 
-// 缩放并显示当前选中的原图或标注图
+// 缩放并显示标注图（文件模式）；IPC 模式由 ShmImageLabel 浅拷绘制
 void InspectionWindow::updateImageView()
 {
-    const QPixmap &src = (m_showAnnotated && !m_annotatedPixmap.isNull()) ? m_annotatedPixmap : m_originalPixmap;
+    if (m_ipcDisplayActive)
+        return;
+
+    const QPixmap &src = !m_annotatedPixmap.isNull() ? m_annotatedPixmap : m_loadedPixmap;
     if (src.isNull())
     {
         m_imageLabel->clear();
@@ -528,12 +602,9 @@ void InspectionWindow::onLoadImage()
     if (path.isEmpty())
         return;
 
-    m_originalPath = path;
-    m_originalPixmap = loadPixmap(path);
+    m_loadedPixmap = loadPixmap(path);
     m_annotatedPixmap = QPixmap();
-    m_showAnnotated = false;
-    m_btnToggleView->setChecked(false);
-    m_btnToggleView->setText(QStringLiteral("原图"));
+    m_annotatedPath.clear();
     updateImageView();
 }
 
@@ -584,14 +655,6 @@ void InspectionWindow::onSavePieData()
 
     QMessageBox::information(this, QStringLiteral("另存为统计数据"),
                              QStringLiteral("已保存：\n%1\n%2").arg(path, pngPath));
-}
-
-// 切换原图与检测标注图显示
-void InspectionWindow::onToggleView()
-{
-    m_showAnnotated = m_btnToggleView->isChecked();
-    m_btnToggleView->setText(m_showAnnotated ? QStringLiteral("检测图") : QStringLiteral("原图"));
-    updateImageView();
 }
 
 // 在当前目录或上级目录查找 vision_engine.json
