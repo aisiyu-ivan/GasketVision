@@ -1,7 +1,7 @@
 {
   "imageSource": "gige",
   "pxPerMm": 10.0,
-  "imageCenterPx": [320, 240],
+  "imageCenterPx": [960, 540],
   "matchScoreMin": 0.45,
   "spec": {
     "outerDiameterMm": 12.0,

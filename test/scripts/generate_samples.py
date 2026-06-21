@@ -12,10 +12,22 @@ from pathlib import Path
 
 TEST_DIR = Path(__file__).resolve().parent.parent
 
+BASE_W, BASE_H = 640, 480
+SHM_MAX_W, SHM_MAX_H = 1920, 1080
+
 PX_PER_MM = 10.0
-IMG_W, IMG_H = 640, 480
+IMG_W, IMG_H = 1920, 1080
+SCALE_X = IMG_W / BASE_W
+SCALE_Y = IMG_H / BASE_H
 CENTER = (IMG_W // 2, IMG_H // 2)
-FIDUCIAL_ORIGIN = (30, 30)
+FIDUCIAL_ORIGIN = (int(30 * SCALE_X), int(30 * SCALE_Y))
+FIDUCIAL_HBAR_W = int(24 * SCALE_X)
+FIDUCIAL_HBAR_H = max(1, int(4 * SCALE_Y))
+FIDUCIAL_VBAR_W = max(1, int(4 * SCALE_X))
+FIDUCIAL_VBAR_H = int(24 * SCALE_Y)
+TEMPLATE_CROP_W = max(8, int(32 * SCALE_X))
+TEMPLATE_CROP_H = max(8, int(32 * SCALE_Y))
+
 NOMINAL_OD = 12.0
 NOMINAL_ID = 8.0
 
@@ -27,7 +39,6 @@ CASES = {
     "missing": {"expectedOk": False, "od": 0.0, "id": 0.0, "dx": 0.0, "dy": 0.0, "draw_ring": False},
 }
 
-# 默认 OK 占 60%，其余缺陷均分 40%（避免演示 NG 率过高）
 CASE_WEIGHTS = {
     "ok": 6,
     "od_oversize": 1,
@@ -35,6 +46,29 @@ CASE_WEIGHTS = {
     "eccentric": 1,
     "missing": 1,
 }
+
+
+def configure_geometry(width: int, height: int) -> None:
+    global IMG_W, IMG_H, SCALE_X, SCALE_Y, CENTER, FIDUCIAL_ORIGIN
+    global FIDUCIAL_HBAR_W, FIDUCIAL_HBAR_H, FIDUCIAL_VBAR_W, FIDUCIAL_VBAR_H
+    global TEMPLATE_CROP_W, TEMPLATE_CROP_H
+
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be positive")
+    if width > SHM_MAX_W or height > SHM_MAX_H:
+        raise ValueError(f"resolution {width}x{height} exceeds SHM limit {SHM_MAX_W}x{SHM_MAX_H}")
+
+    IMG_W, IMG_H = width, height
+    SCALE_X = width / BASE_W
+    SCALE_Y = height / BASE_H
+    CENTER = (width // 2, height // 2)
+    FIDUCIAL_ORIGIN = (int(30 * SCALE_X), int(30 * SCALE_Y))
+    FIDUCIAL_HBAR_W = max(1, int(24 * SCALE_X))
+    FIDUCIAL_HBAR_H = max(1, int(4 * SCALE_Y))
+    FIDUCIAL_VBAR_W = max(1, int(4 * SCALE_X))
+    FIDUCIAL_VBAR_H = max(1, int(24 * SCALE_Y))
+    TEMPLATE_CROP_W = max(8, int(32 * SCALE_X))
+    TEMPLATE_CROP_H = max(8, int(32 * SCALE_Y))
 
 
 def mm_to_px(mm: float) -> float:
@@ -84,8 +118,8 @@ class GrayImage:
 
 def draw_fiducial(img: GrayImage) -> None:
     ox, oy = FIDUCIAL_ORIGIN
-    img.fill_rect(ox, oy, ox + 24, oy + 4, 220)
-    img.fill_rect(ox, oy, ox + 4, oy + 24, 220)
+    img.fill_rect(ox, oy, ox + FIDUCIAL_HBAR_W, oy + FIDUCIAL_HBAR_H, 220)
+    img.fill_rect(ox, oy, ox + FIDUCIAL_VBAR_W, oy + FIDUCIAL_VBAR_H, 220)
 
 
 def draw_fixture(img: GrayImage) -> None:
@@ -133,9 +167,9 @@ def save_fiducial_template(out_dir: Path) -> str:
     full = GrayImage(IMG_W, IMG_H, 0)
     draw_fiducial(full)
     x, y = FIDUCIAL_ORIGIN
-    crop = GrayImage(32, 32, 0)
-    for cy in range(32):
-        for cx in range(32):
+    crop = GrayImage(TEMPLATE_CROP_W, TEMPLATE_CROP_H, 0)
+    for cy in range(TEMPLATE_CROP_H):
+        for cx in range(TEMPLATE_CROP_W):
             crop.set_px(cx, cy, full.pixels[(y + cy) * IMG_W + (x + cx)])
     tpl_dir = out_dir / "templates"
     tpl_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +183,11 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=TEST_DIR, help="Output directory (default: test/)")
     parser.add_argument("--per-case", type=int, default=5, help="Images per defect case")
     parser.add_argument("--total", type=int, default=None, help="Total images, split evenly across cases")
+    parser.add_argument("--width", type=int, default=1920, help="Image width in pixels (default: 1920, SHM max 1920)")
+    parser.add_argument("--height", type=int, default=1080, help="Image height in pixels (default: 1080, SHM max 1080)")
     args = parser.parse_args()
+
+    configure_geometry(args.width, args.height)
 
     case_keys = list(CASES.keys())
     case_count = len(case_keys)
@@ -176,6 +214,9 @@ def main() -> None:
     template_rel = save_fiducial_template(out_dir)
     manifest: dict = {
         "pxPerMm": PX_PER_MM,
+        "imageWidth": IMG_W,
+        "imageHeight": IMG_H,
+        "imageCenterPx": [CENTER[0], CENTER[1]],
         "templatePath": template_rel,
         "entries": [],
     }
@@ -199,7 +240,7 @@ def main() -> None:
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     ok_n = per_case_map.get("ok", 0)
     total_n = len(manifest["entries"])
-    print(f"Wrote {total_n} images to {out_dir} (OK={ok_n}, NG≈{total_n - ok_n})")
+    print(f"Wrote {total_n} images at {IMG_W}x{IMG_H} to {out_dir} (OK={ok_n}, NG≈{total_n - ok_n})")
 
 
 if __name__ == "__main__":

@@ -382,209 +382,249 @@ HMI:     on Camera ready → ack（槽位未满时）
 
 ---
 
-## 五、项目使用的容器与算法（汇总）
 
-面向面试/自查：本项目 **以 Qt 容器为主**，STL 序列/关联容器用得很少；**没有**使用 `std::stack`、`std::deque`、`std::list`、`std::map`、`std::set` 等。检测主链路额外用 **固定长度 C 数组**（IPC 控制块）和 **4 槽环形存储区**（非 `std::` 容器）。
-
-### 5.1 序列容器
-
-| 类别 | 类型 | 主要用途 | 代表位置 |
-|------|------|----------|----------|
-| **Qt 动态数组** | `QList<T>` | 扇区角、颜色、饼图指针、协议拆行后的字段 | `SinglePieChart`、`PieChartConfig`、`CameraHmiProtocol` |
-| **Qt 字符串列表** | `QStringList` | 样品路径列表、目录扫描、饼图变量名 | `SyntheticImageSource`、`InspectionWindow::validateTestAssets` |
-| **Qt 队列（FIFO）** | `QQueue<VisionFrame>` | 采图→发布待写队列；通信→算法待检队列 | `CameraPublishWorker`、`StationCommWorker` |
-| **STL 动态数组** | `std::vector<T>` | 径向扫描半径样本；饼图外部灌入 `VarCountData` | `GasketInspector::measureRing`、`Pie_Chart_Control/widget` |
-| **定长 C 数组** | `char path[260]` 等 | IPC `ControlBlock` 内路径/状态/缺陷文本 | `CameraIpcLayout.h` |
-| **环形缓冲（布局）** | 4 槽 ×（头 + 像素区） | 相机 SHM，非 `std::` 容器，`frameId % 4` 选槽 | `CameraIpc::kRingSlots` |
-| **字节缓冲** | `QByteArray` | 套接字读缓冲、行协议编解码 | `SocketLineCodec`、`CameraHmiSocketClient` |
-| **图像矩阵** | `cv::Mat` | 采图、检测、SHM 浅拷视图 | `VisionFrame`、`GasketInspector` |
-| **显示图像** | `QImage` | HMI 标注图（深拷贝后上屏） | `InspectionResult`、`ShmImageLabel` |
-
-**未使用：** `std::array`、`std::deque`、`std::list`、`QVector`（全项目未用）、`QStack`、`QLinkedList`。
-
-**队列操作：** `enqueue` / `dequeue` / `prepend`（发布失败时回队首重试）。
-
-### 5.2 关联容器（映射 / 集合）
-
-| 类别 | 类型 | 主要用途 | 代表位置 |
-|------|------|----------|----------|
-| **哈希映射** | `QHash<K,V>` | OK/NG 计数、工位→计数、变量名→编辑框指针 | `InspectionAggregator`、`OkNgStatsPanel`、`PieChartConfig` |
-| **嵌套哈希** | `QHash<int, QHash<QString,uint>>` | 按工位累计 OK/NG | `InspectionAggregator::m_perStation` |
-| **有序映射** | `QMap<QString, QStringList>` | 按缺陷类别分组样品路径 | `SyntheticImageSource::interleaveByCase` |
-| **哈希集合** | `QSet<QString>` | 饼图变量名去重 | `PieChartConfig`、`PieChartConfigDialog` |
-
-**未使用：** `std::map`、`std::unordered_map`、`std::set`、`std::unordered_set`、`QMultiMap`、`QMultiHash`。
-
-### 5.3 适配器与其它「容器式」类型
-
-| 类型 | 用途 |
-|------|------|
-| `std::unique_ptr<IVisionImageSource>` | 采图源工厂创建，独占所有权 |
-| `QSharedMemory` | 跨进程共享存储区 attach/create |
-| `QMutex` + `QMutexLocker` | 发布队列、OK/NG 聚合器互斥 |
-| `std::atomic<bool>` | HMI 订阅线程运行/重置标志 |
-| `QJsonArray` / `QJsonObject` | 配置解析（非业务容器，只读配置树） |
-
-### 5.4 算法（查找 / 排序 / 遍历 / 统计）
-
-#### STL / `<algorithm>`
-
-| 算法 | 用途 | 位置 |
-|------|------|------|
-| **`std::sort`** | 变量名字典序排序 | `PieChartConfigDialog::sortedUniqueNamesFromEdits` |
-| **`std::nth_element`** | 径向半径样本取**中位数**（O(n) 部分排序） | `GasketInspector::measureRing` |
-
-**未使用：** `std::find` / `find_if`、`binary_search`、`lower_bound`、`partition`、`stable_sort`、`std::accumulate` 等。
-
-#### Qt / 业务遍历
-
-| 方式 | 用途 |
-|------|------|
-| `QStringList::sort()` | 每组样品文件名排序 |
-| `QDir::entryList(..., QDir::Name)` | 扫描 `station1/*.png` |
-| `for (const T &v : std::as_const(m_sectorData))` | 饼图扇区遍历 |
-| `QQueue` 出队入队 | 帧流水线调度 |
-| `qMax` / `qMin` | 超时、布局、字符串截断上界 |
-| `QString::split` + `parseReady` / `parseAck` | 套接字行协议解析（按空格拆字段） |
-
-#### OpenCV / 视觉算法（`GasketInspector`）
-
-| 类别 | API / 逻辑 |
-|------|------------|
-| **查找（匹配）** | `cv::matchTemplate` + `cv::minMaxLoc`（模板相关峰） |
-| **遍历（测径）** | 0°–358° 每 2° 径向射线扫描；ROI 内像素遍历 |
-| **滤波** | `cv::GaussianBlur` |
-| **分割** | `cv::threshold`（固定阈值 120） |
-| **矩 / 质心** | `cv::moments`、`cv::countNonZero` |
-| **几何** | `std::cos` / `std::sin`、`std::hypot`、`std::abs`、`std::round` |
-| **绘制** | `cv::circle`、`cv::putText`、`cv::cvtColor` |
-
-#### 业务调度（非 STL，属流水线算法）
-
-| 逻辑 | 说明 |
-|------|------|
-| **环形槽反压** | `frameId % 4`；严格模式 `ready/ack` 或本地 `lastAcked` 门控 |
-| **等待标注** | `waitForAnnotated` 轮询 `ControlBlock.flags` |
-| **样品交错播放** | `interleaveByCase`：按 ok / 各 NG 类型轮询出队 |
-| **饼图扇区角分配** | 按 `count/total × 360°` 累加起始角（`QPainter::drawPie`） |
-
-#### Python 测试脚本（`test/scripts/`）
-
-| 脚本 | 容器 | 算法 |
-|------|------|------|
-| `generate_samples.py` | `dict`（manifest）、`list`、`bytearray` 像素缓冲 | 双重 `for` 画矩形/圆；PNG zlib 压缩；按权重分配样品数量 |
-| `diagnose_samples.py` | `list`、`dict`、`defaultdict` | 与 C++ 类似的径向扫描；**`sorted` 取中位数**；按 case 统计遍历 manifest |
-
-### 5.5 小结（面试一句话）
-
-- **容器：** 帧队列用 **`QQueue`**，统计用 **`QHash`**，样品分组用 **`QMap`**，测径临时数据用 **`std::vector`**，IPC 用 **定长数组 + 4 槽环**，图像用 **`cv::Mat` / `QImage`**。  
-- **算法：** 唯一 STL 标准算法是 **`std::sort`**（饼图配置）和 **`std::nth_element`**（测径中位数）；视觉侧是 **模板匹配 + 径向扫描 + 阈值分割**；流水线侧是 **环形缓冲 + ready/ack 反压**。
 
 ---
 
-## 六、合成样品图基础信息（我对图像的理解）
+## 九、图像核心信息与合成样品（我对图像的理解）
 
-测试链路读的是 `test/station1/*.png`，由 **`test/scripts/generate_samples.py`** 生成；每张图的「真值」写在 **`test/manifest.json`**。以下说明 **图像里有什么、物理量怎么对应像素、算法为什么能检**。
+图像的全部核心信息可客观梳理为 **三个板块**：内存与几何结构（算法直接操作的对象）、光学与成像特征（质量与预处理依据）、文件及物理元数据（读取、解析与尺寸还原）。以下先给出通用框架，再说明本项目合成样品如何对应。
 
-### 6.1 图像文件与标定
+### 9.1 内存与几何结构信息（算法处理的直接对象）
 
-| 项目 | 值 | 说明 |
-|------|-----|------|
-| 格式 | **8 位灰度 PNG** | 单通道，与 Camera 发布 **Gray8**、Engine 读灰度一致 |
-| 分辨率 | **640 × 480** | 与 `vision_engine.json` 中 `imageCenterPx: [320, 240]` 匹配 |
-| 像素比例 | **10 px/mm** | `pxPerMm`，1 mm 对应 10 像素 |
-| 工位 | **station1** | 文件名 `{case}_{序号}.png`，如 `ok_00.png` |
-| 定位模板 | **32×32** `templates/fiducial_L.png` | 从全图左上角 `(30,30)` 裁切的 L 形角标 |
+这类信息决定图像在计算机内存中的矩阵形态、边界与寻址方式，是编写图像处理代码时最核心的参数。
 
-**尺寸换算示例：** 标称外径 12 mm → 直径 **120 px**（半径 60 px）；内径 8 mm → 直径 **80 px**（半径 40 px）。
+**分辨率（Dimensions）**
 
-### 6.2 场景构成（由底到顶）
+- 图像的 **宽度（Width）** 与 **高度（Height）**，单位为 **像素（Pixel）**。
+- 在矩阵中通常：**行数（Rows）= 高度**，**列数（Cols）= 宽度**。
 
-合成图不是照片，而是 **按几何规则绘制的灰度场景**，层次固定：
+**通道数（Channels）**
 
-```
-┌──────────────────────────────────── 640×480 ────────────────────────────────────┐
-│  ■ L 形角标 (30,30)  灰度≈220          ← 模板匹配用 fiducial_L                    │
-│                                                                                  │
-│              ╭── 工装圆 灰度≈55（标称外径+6mm 的细环，仅示意）──╮                  │
-│              │     ╭════ 垫片亮环 灰度≈205 ════╮               │                  │
-│              │     ║   外径 OD / 内径 ID       ║  ← 检测目标    │                  │
-│              │     ╚═══════════════════════════╝               │                  │
-│              ╰──────── 图像中心 (320,240) ────────╯                              │
-│  背景填充灰度≈38（整幅先铺底）                                                    │
-└──────────────────────────────────────────────────────────────────────────────────┘
-```
+- 单个像素包含的数值分量个数。
+- 灰度图为 **1 通道**；RGB 工业相机采集的彩色图为 **3 通道**；带透明度（Alpha）的图像为 **4 通道**。
 
-| 图层 | 灰度值 | 作用 |
-|------|--------|------|
-| 背景 | **38** | 暗场，与亮垫片、角标对比 |
-| 工装圆 | **55** | 细圆描边，半径 ≈ `OD/2 + 6mm`，模拟夹具轮廓（不参与 OK/NG 判定） |
-| L 形角标 | **220** | 24×4 + 4×24 像素直角，用于 **`matchTemplate` 缺件判断** |
-| 垫片环带 | **205** | 环形区域：`inner_r ≤ 距离中心 ≤ outer_r` 的像素置亮 |
+**数据类型与位深度（Data Type & Depth）**
 
-缺件类 **`missing`** 只画背景和工装，**不画亮环** → 匹配分低或测不到环，算法应判 **NG / 缺件**。
+- 每个像素中每个通道占用的二进制位数及内存表示形式。
+- 最常用：**8-bit unsigned char**（取值 0～255）。
+- 工业高精度测量中常用：**16-bit unsigned short**（0～65535），或 **32-bit float**（0.0～1.0）。
 
-### 6.3 五类样品与物理含义
+**步长（Stride / Step）**
 
-与 `vision_engine.json` 中 **标称 + 容差** 对照（检测端 `GasketInspector` 使用同一套数）：
+- 图像内存中 **每一行像素实际占用的字节数（Bytes）**。
+- 为实现内存对齐（通常对齐到 4 或 8 字节）以提升 CPU/GPU 读取效率，步长往往 **≥ 宽度 × 通道数 ×（位深度 / 8）**。
+- 直接进行指针寻址操作像素时，**必须使用步长** 计算偏移量。
 
-| 标称 | 值 |
-|------|-----|
-| 外径 OD | 12.0 mm |
-| 内径 ID | 8.0 mm |
-| 外径容差 | ±0.10 mm |
-| 内径容差 | ±0.08 mm |
-| 偏心容差 | 0.12 mm（合位移） |
+### 9.2 光学与成像特征信息（决定图像质量与特征）
 
-| case 前缀 | 预期 | 生成时 OD/ID/偏心（约） | 对应缺陷 |
-|-----------|------|-------------------------|----------|
-| **ok_** | OK | OD≈12.01 mm，ID≈8.01 mm，偏心 &lt;0.03 mm | 均在容差内 |
-| **od_oversize_** | NG | OD≈**12.25 mm**（超外径容差） | 尺寸超差 |
-| **id_undersize_** | NG | ID≈**7.75 mm**（超内径容差） | 尺寸超差 |
-| **eccentric_** | NG | OD/ID 合格，偏心 **(0.15, 0.12) mm** | 偏心偏移 |
-| **missing_** | NG | 不画垫片环 | 缺件 |
+这类信息由相机硬件和拍摄环境决定，直接影响噪点、对比度、亮度与细节，是图像预处理（去噪、增强）和相机标定必须考虑的参数。
 
-同类别多张图之间用 **seed 微扰**（`seed = 100 + 序号`）：OD ±0.005 mm 级、ID ±0.004 mm、偏心 ±0.002 mm，避免每张完全相同，更贴近「连续生产略有波动」。
+**曝光时间（Exposure Time）**
 
-### 6.4 与检测算法的对应关系
+- 快门打开的时间长短。
+- 曝光时间长 → 易 **运动模糊（拖影）**；曝光时间短 → 图像可能 **偏暗、噪点多**。
 
-1. **缺件 / 有无垫片**  
-   - 角标模板 `fiducial_L.png` 与全图做 **归一化互相关**；`matchScore < 0.45` → 缺件。  
-   - `missing` 类虽仍有角标，但无亮环 → 后续 **测径失败** 也会归缺件。
+**增益（Gain / ISO）**
 
-2. **测径**  
-   - 以配置中心 **(320, 240)** 为基准，在 ROI 内 **阈值 120 二值化** → 径向扫描 → **中值** 得内外径（mm）。  
-   - 与 `manifest.json` 里 `outerDiameterMm` / `innerDiameterMm` 可对照验收。
+- 感光元件对光信号的放大倍数。
+- 增益过高会引入明显的 **感光噪声**（信号放大时噪点同时被放大）。
 
-3. **偏心**  
-   - 亮区质心相对 **(320, 240)** 的偏移 ÷ `pxPerMm` → `offsetXMm` / `offsetYMm`，再与 `offsetTolMm` 比。
+**光圈（Aperture）**
 
-4. **标注图（BGR）**  
-   - 算法在原图同槽画 **外圆（绿）、内圆（青）、基准点（蓝）、OK/NG 文字**；HMI 只显示这张标注图。
+- 控制进光量的机械结构，决定 **景深**。
+- 光圈大 → **景深浅**（背景易模糊）；光圈小 → **景深大**（前后景物都较清晰）。
 
-### 6.5 manifest.json 与播放顺序
+**色彩空间（Color Space）**
 
-**manifest 每条 entry 字段：**
+- 像素数值的物理意义；处理前需明确是 **RGB**、**BGR**（OpenCV 默认）、**灰度（Gray）**，还是适合颜色分割的 **HSV/HSI**，亦或是视频常用的 **YUV**。
 
-| 字段 | 含义 |
-|------|------|
-| `imagePath` | 相对 `test/` 的路径 |
-| `stationId` | 工位号（当前均为 1） |
-| `case` | 缺陷类别键 |
-| `expectedOk` | 生成脚本认定的期望 OK/NG |
-| `outerDiameterMm` / `innerDiameterMm` | 该张图合成时的标称尺寸（缺件为 null） |
+**白平衡（White Balance）**
 
-**数量分配（`--total N`）：** 按权重 **OK 60%**、四种 NG 各 **10%**（权重 6:1:1:1:1），避免演示时 NG 过多。
+- 调整 R/G/B 三通道相对比例，使在不同光源（日光、日光灯等）下，**白色物体在图像中仍呈现白色**。
 
-**播放顺序：** `SyntheticImageSource::interleaveByCase` 按 **ok → od_oversize → id_undersize → eccentric → missing** 交错轮播，避免长时间连续同类缺陷。
+### 9.3 文件及物理元数据（外设与传输关联）
 
-### 6.6 生成与使用命令
+这类信息属于封装在文件头或配置中的附加数据，用于图像读取、解析以及物理尺寸的还原。
 
-```bat
-cd test
-python scripts\generate_samples.py --total 20    REM 少量联调
-python scripts\generate_samples.py --total 1000  REM run_test.bat 默认
-python scripts\diagnose_samples.py               REM 对照 manifest 验收算法与样品是否一致
-```
+**编码格式（Codec / Format）**
 
-**面试可强调：** 样品图不是随意截图，而是 **按 px/mm 标定、按容差边界设计五类 case**；角标负责 **有无工件**，亮环负责 **尺寸与偏心**，manifest 提供 **可回归的 ground truth**，与 `GasketInspector` 的模板匹配 + 径向测径链路一一对应。
+- 如 **BMP**（无压缩，可近似内存直接映射）、**JPEG**（有损压缩）、**PNG**（无损压缩）。
+- 算法运行时须先 **解压** 还原为内存中的非压缩矩阵再处理。
+
+**像素实际物理尺寸（Resolution Unit / DPI）**
+
+- 单个像素在现实世界中代表的物理长度（如 DPI，或工业检测中 **μm/px**、**px/mm**）。
+- 将图像中的 **像素距离** 转化为 **现实测量尺寸** 的基准。
+
+**EXIF 标签（EXIF Tags）**
+
+- 拍摄设备型号、时间戳、GPS 等。
+- 多相机同步或时间序列处理时，**时间戳** 是关键信息。
+
+### 9.4 本项目中的实际取值（汇总）
+
+上文三类基础信息，在 GasketVision 三进程链路里 **具体是什么、写在哪、谁用**，如下表。
+
+#### 一、内存与几何结构
+
+| 基础项 | 本项目实际取值 | 配置 / 代码位置 | 说明 |
+|--------|----------------|-----------------|------|
+| **分辨率（宽×高）** | **1920 × 1080** | `generate_samples.py` 默认；`manifest.json` 的 `imageWidth` / `imageHeight`；SHM `ImagePlaneHeader.width/height` | OpenCV：`cv::Mat` **cols=1920、rows=1080**；HMI `QImage` 同宽高 |
+| **分辨率上限** | **1920 × 1080**（写死） | `CameraIpc::kMaxImageBytes = 1920×1080×3`（[`CameraIpcLayout.h`](CameraService/ipc/CameraIpcLayout.h)） | 单槽像素区上限 = **编译期最大分辨率**；Gray→原地 BGR 整条链按 **1080p BGR** 卡上限 |
+| **图像中心（像素）** | **(960, 540)** | `vision_engine.json` → `imageCenterPx`；`manifest.json` 同字段 | `GasketInspector` 测径 ROI、偏心基准；合成图垫片几何中心 |
+| **通道数** | 采图 **1**；标注/显示 **3** | SHM `ImageFormat::Gray8` → 原地 `Bgr888` | Camera 发布 Gray8；Engine 在同槽 payload 上画 BGR；HMI 读 BGR 转 RGB 显示 |
+| **数据类型 / 位深** | **8-bit unsigned** | `CV_8UC1`（Gray）、`CV_8UC3`（BGR）；`QImage::Format_RGB888` | 无 16-bit / float 图；阈值、模板匹配、径向扫描均按 0～255 |
+| **步长（Stride）** | Gray：`bytesPerLine = width`；BGR：`bytesPerLine = width×3` | SHM `ImagePlaneHeader.bytesPerLine`；`GasketInspector` 标注时 `width*3` | `cv::Mat` 非连续时 `clone()` 再写入 SHM；HMI 按 `bytesPerLine` 逐行拷贝 BGR→RGB |
+| **单槽 / 四槽容量** | 单槽 **≈5.93 MiB** 像素区 + 32B 头；四槽 + 控制块 **≈23.7 MiB** | `slotBytes()` × `kRingSlots=4` | 与 §9.1 分辨率上限一致；队列深度、反压窗口也对齐 **4 槽** |
+
+#### 二、光学与成像特征
+
+| 基础项 | 本项目实际取值 | 配置 / 代码位置 | 说明 |
+|--------|----------------|-----------------|------|
+| **曝光时间** | 合成：**无**（脚本绘制）；GigE：**未接入 SDK** | `GigEVisionCamera` 骨架 | 测试链路不受快门影响；正式 GigE 待 SDK 后再配 |
+| **增益 / ISO** | **未使用** | — | 合成图无传感器噪声模型 |
+| **光圈 / 景深** | **未使用** | — | 合成图为平面几何，无光学景深 |
+| **色彩空间** | 检测：**Gray**；算法/OpenCV 内部：**BGR**；HMI 显示：**RGB**（由 BGR 手动交换） | `GasketInspector`、`CameraIpcSubscriberWorker::planeToImageView` | 全流程不做 HSV/YUV；HMI **不链 OpenCV**，只收 `QImage` |
+| **白平衡** | **未使用** | — | 灰度合成 + 固定灰度值（背景 38、垫片 205 等），无 RGB 白平衡 |
+
+#### 三、文件及物理元数据
+
+| 基础项 | 本项目实际取值 | 配置 / 代码位置 | 说明 |
+|--------|----------------|-----------------|------|
+| **编码格式** | 样品：**8 位灰度 PNG**（无损）；落盘标注：**PNG** | `test/station1/*.png`；HMI `captures/{frameId}_annot.png` | 运行时：`SyntheticImageSource` / `cv::imread` **解压**为 `cv::Mat`；SHM 内为 **未压缩** 像素 |
+| **像素物理尺寸** | **`pxPerMm = 10.0`** → **1 px = 0.1 mm** | `vision_engine.json`、`manifest.json` | 外径 12 mm ≈ 120 px 直径；测径、偏心、`manifest` 真值均按此换算 |
+| **EXIF** | **未使用** | — | 样品 PNG 无 EXIF；时间用 **`VisionFrame.timestampMs`**、SHM `ControlBlock.timestampMs`，非 EXIF |
+| **样品真值** | `manifest.json`：`case`、`expectedOk`、OD/ID（mm） | `test/manifest.json` | 与 `GasketInspector` 公差、`diagnose_samples.py` 对照验收 |
+| **定位模板** | **`templates/fiducial_L.png`**（约 **96×72**，随 1080p 缩放） | `vision_engine.json` → `templatePath` | `matchTemplate` 缺件判断；角标在合成图左上角按 `SCALE_X/Y` 放大 |
+
+#### 四、跨进程传递（补充）
+
+| 环节 | 图像形态 |
+|------|----------|
+| Camera → SHM | Gray8，`payloadSize = 1920×1080` |
+| Engine 读/检 | `cv::Mat` Gray 浅拷 → 同槽原地 BGR 标注，`payloadSize = 1920×1080×3` |
+| HMI 读 SHM | BGR → `QImage` RGB888 浅拷 → `ShmImageLabel` / 落盘 PNG |
+| 套接字 | **不传像素**；仅 Camera↔HMI `ready/ack` |
+
+**面试可一句话：** 本项目图像是 **1080p、8-bit**；链路 **Gray 进、BGR 标注出**；物理尺寸靠 **`pxPerMm=10`**；文件侧 **PNG 样品 + manifest 真值**；**单槽上限即写死的 1920×1080**，与合成脚本、SHM、队列四槽一致。
+
+---
+
+## 十、项目使用的容器
+
+本项目 **以 Qt 容器为主**；STL 仅 **`std::vector`** 与 **`std::unique_ptr`**。**未使用** `std::deque` / `std::list` / `std::map` / `std::set` / `QVector`。
+
+以下按 **容器类型** 列出：当前存什么、为何选这种结构。
+
+### 9.1 队列（FIFO）：`QQueue`
+
+| 成员 | 进程 | 存放内容 | 为何用队列 |
+|------|------|----------|------------|
+| `CameraPublishWorker::m_pendingFrames` | CameraService | 已 `grab`、**尚未写入 SHM** 的 `VisionFrame`（含 `cv::Mat`、路径、时间戳） | 采图线程与发布线程解耦；**先进先出** 保 `frameId` 顺序；非严格模式深度 ≤2，满则丢新帧 |
+| `StationCommWorker::m_pendingInspect` | VisionEngine | 已从 SHM **读出 Gray**、**尚未交给算法** 的 `VisionFrame` | 通信线程 poll 读 SHM 与 OpenCV 检测解耦；深度 ≤4 与四槽环对齐；`m_inspectRunning` 保证串行出队 |
+
+**操作习惯：** 正常 `enqueue` / `dequeue`；Camera 发布失败时 **`prepend` 回队首** 保序重试。
+
+### 9.2 哈希映射：`QHash`
+
+| 成员 / 用途 | 进程 | Key → Value | 为何用 QHash |
+|-------------|------|-------------|--------------|
+| `InspectionAggregator::m_perStation` | HMI | `stationId` →（`"OK"`/`"NG"` → 计数） | 按工位累加 OK/NG；**O(1)** 查找，工位数少、键为 int/字符串 |
+| `OkNgStatsPanel::m_counts` | HMI | 变量名 → 计数 | 刷 OK/NG 面板；键无序、只查改计数 |
+| `PieChartConfig::m_varCounts` | HMI（饼图） | 变量名 → 计数 | 与 `InspectionWindow::setPieCounts` 对接；频繁按名更新 |
+| `PieChartConfigDialog::m_nameToCountSpin` | HMI（饼图） | 变量名 → `QSpinBox*` | 编辑对话框按名找控件 |
+| `SinglePieChart::applySectorDataCountsFromHash` | HMI（饼图） | 外部传入的 变量名→计数 | 扇区顺序固定，用 Hash **按名取 count** 再组装扇区列表 |
+
+**为何不用 `QMap`：** 不需要按键排序；`QHash` 均摊查找更快，与 Qt 信号槽传参习惯一致。
+
+### 9.3 有序映射：`QMap`
+
+| 成员 / 用途 | 进程 | Key → Value | 为何用 QMap |
+|-------------|------|-------------|-------------|
+| `interleaveByCase` 局部 `groups` | CameraService | 缺陷 case 前缀（`ok` / `od_oversize` / …）→ 该 case 的 **`QStringList` 路径** | 按 **固定 kOrder 顺序** 轮询各 case；`QMap` 键有序，便于按名取组 |
+| （仅此一处业务 `QMap`） | | | 样品分组后还要 **组内 sort**，组间 **交错出队** |
+
+### 9.4 哈希集合：`QSet`
+
+| 成员 / 用途 | 进程 | 存放内容 | 为何用 QSet |
+|-------------|------|----------|-------------|
+| `PieChartConfig::validate` 内 `seen` | HMI（饼图） | 当前饼内已出现的变量名 | **去重**：同一饼不允许重复变量名 |
+| `PieChartConfigDialog` 内 `s` / `uniq` | HMI（饼图） | 各编辑框汇总后的不重复变量名 | 合并多饼变量名时 **去重**，再 `values()` 转列表排序 |
+
+**为何不用 `QList` 线性查重：** 变量名个数少但可能重复输入，Set 语义更清晰、O(1) 插入查重。
+
+### 9.5 序列列表：`QList` / `QStringList`
+
+| 成员 / 用途 | 进程 | 存放内容 | 为何用 QList / QStringList |
+|-------------|------|----------|---------------------------|
+| `SyntheticImageSource::m_files` | CameraService | 交错排序后的 **样品 PNG 路径** | 顺序播放；`QStringList` 与 `QDir::entryList` 直接对接 |
+| `PieChartConfig::m_varsPerPie` | HMI（饼图） | `QList<QStringList>`：每个饼图的变量名列表 | 保留下标与饼图一一对应；内层 `QStringList` 保扇区顺序 |
+| `SinglePieChart::m_sectorData` / `m_sectorColors` | HMI（饼图） | 扇区数据 `VarCountData`、扇区颜色 | 绘制顺序 = 列表顺序；与 `QPainter::drawPie` 角序一致 |
+| `SinglePieChart` 局部 `start16` / `span16` | HMI（饼图） | 各扇区起始角、跨度（1/16 度单位） | 一次布局、多次绘制（内标签/外引线） |
+| `widget.h::m_charts` | HMI（饼图） | `SinglePieChart*` 指针列表 | 多饼控件按索引管理 |
+| `CameraHmiProtocol::parseReady/Ack` | HMI / Camera | 行协议按空格拆出的字段 | `QString::split` 自然得到 `QStringList` |
+
+**说明：** `QList` 与 `QVector` 在 Qt6 常等价；本项目 **未显式使用 `QVector`**。
+
+### 9.6 STL 动态数组：`std::vector`
+
+| 成员 / 用途 | 进程 | 存放内容 | 为何用 vector |
+|-------------|------|----------|---------------|
+| `GasketInspector::measureRing` 内 `innerRadii` / `outerRadii` | VisionEngine | 360° 径向扫描得到的 **内外径像素半径样本** | 长度随有效射线变化；配合 **`std::nth_element` 取中位数**（O(n) 部分排序） |
+| `Widget::applyExternalVarCountData(const std::vector<VarCountData>&)` | HMI（饼图） | 外部 API 传入的扇区数据 | 接口层用 STL 向量；内部 **立刻转成 `QHash`** 写入 `PieChartConfig` |
+
+**为何不用 `QVector`：** 测径在 OpenCV/STL 算法侧，`vector` + `nth_element` 更惯用；饼图入口仅一处跨模块 API。
+
+### 9.7 字节缓冲：`QByteArray`
+
+| 成员 / 用途 | 进程 | 存放内容 | 为何用 QByteArray |
+|-------------|------|----------|-------------------|
+| `CameraHmiSocketClient::m_readBuffer` | CameraService | 套接字 **未拆行的原始字节** | 行协议可能半包到达；累积后再 `takeLine` |
+| `CameraHmiSocketServer::m_readBuffer` | HMI | 同上 | 与 Client 对称 |
+| `SocketLineCodec::encodeLine` | HMI / Camera | UTF-8 行文本 + `\n` | Qt 套接字 `write`/`read` 原生类型 |
+| 配置文件 / SHM 路径写入 | 各进程 | `QString` → UTF-8 字节写入 IPC 定长 `char[]` | 与 C 风格 IPC 布局衔接 |
+
+### 9.8 图像矩阵：`cv::Mat` / `QImage`
+
+| 类型 | 进程 | 存放内容 | 为何用这种类型 |
+|------|------|----------|----------------|
+| `VisionFrame::image`（`cv::Mat`） | Camera / Engine | 采图或 SHM 浅拷的 **Gray8** 矩阵 | OpenCV 检测全链路；可与 SHM payload **共享内存视图**（不二次拷贝） |
+| `GasketInspector::m_template` / `annotated` | VisionEngine | 定位模板、标注结果 | `matchTemplate`、`circle`、`putText` 等 API 原生类型 |
+| `InspectionResult::annotatedImage`（`QImage`） | HMI | SHM BGR 平面转成的 **显示用图像** | HMI **不链 OpenCV**；`QImage` 供 `QLabel`/`ShmImageLabel` 绘制 |
+| `ShmImageLabel::m_view` | HMI | 当前帧浅拷视图 + `frameId` | 避免 `QPixmap::fromImage` 整图深拷；paint 时直接 `drawImage` |
+
+**分工：** 算法侧 **`cv::Mat`**，界面侧 **`QImage`**，在 IPC/信号槽边界做一次格式转换。
+
+### 9.9 配置树：`QJsonObject` / `QJsonArray`
+
+| 用途 | 存放内容 | 为何用 JSON 树 |
+|------|----------|----------------|
+| `vision_engine.json` 加载 | 工位、公差、`strictSampleAccounting`、`intervalMs` 等 | 三进程共用一份配置；Qt 内置解析 |
+| `PieChartConfig::toJson` / `fromJson` | 饼图变量名列表、各变量计数 | 持久化到 `.json`；`QJsonArray` 表数组，`QJsonObject` 表键值 |
+| `CameraPublishWorker::configure` 读 `stations` | 工位数组 | 嵌套配置，数组遍历选 `stationId==1` |
+
+**说明：** 只读配置，**非常驻业务队列**；运行时计数走 `QHash`，不走 JSON。
+
+### 9.10 所有权与 IPC 定长区
+
+| 类型 | 成员 / 布局 | 存放内容 | 为何用这种结构 |
+|------|-------------|----------|----------------|
+| `std::unique_ptr<IVisionImageSource>` | `CameraGrabWorker` / `CameraPublishWorker` / Factory | 合成或 GigE **采图源** | 工厂创建、独占所有权；进程内无需共享 |
+| `char path[260]` 等 | `CameraIpc::ControlBlock` | 源路径、标注路径、相机状态、缺陷文本 | SHM **固定布局**、跨进程 C 兼容；长度上限防越界 |
+| **四槽环形区**（非 STL） | `CameraIpc::kRingSlots = 4` | 槽头 + Gray/BGR 像素区 | `frameId % 4` 选槽；**不是** `std::deque`，是共享内存上的手动环 |
+
+### 9.11 小结（按容器选型原则）
+
+| 需求 | 本项目选用 |
+|------|------------|
+| 跨线程帧流水线、保序 | **`QQueue<VisionFrame>`** |
+| 按名统计 OK/NG / 饼图计数 | **`QHash<QString, uint>`** |
+| 按 case 分组再固定顺序轮播 | **`QMap` + `QStringList`** |
+| 变量名去重 | **`QSet<QString>`** |
+| 有序 UI / 扇区 / 路径列表 | **`QList` / `QStringList`** |
+| 算法临时样本 + 中位数 | **`std::vector<double>`** |
+| 套接字半包 | **`QByteArray`** |
+| 检测 vs 显示 | **`cv::Mat` vs `QImage`** |
+| 跨进程像素与控制块 | **SHM 四槽环 + 定长 `char[]`** |
+
